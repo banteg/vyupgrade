@@ -2364,6 +2364,8 @@ def _compiler_authority(
     marker_environment: Mapping[str, str] | None = None,
 ) -> CompilerAuthority:
     pyproject = _nearest_pyproject(path.parent)
+    if not _is_uv_run_command(command):
+        return "explicit-executable"
     if project_compiler and _project_declares_vyper(pyproject, marker_environment):
         assert pyproject is not None
         workspace_manifest = _owning_uv_workspace(pyproject)
@@ -2372,8 +2374,6 @@ def _compiler_authority(
             if (workspace_manifest.parent / "uv.lock").is_file()
             else "project-manifest"
         )
-    if not _is_uv_run_command(command):
-        return "explicit-executable"
     if not project_compiler:
         return "fixed-target"
     source_spec = infer_pragma(path.read_text(encoding="utf-8"))
@@ -2640,11 +2640,9 @@ def _project_environment_command(
         "--all-extras",
         "--all-groups",
     ]
-    project_declares_vyper = _project_declares_vyper(pyproject, marker_environment)
     if not _is_uv_run_command(command):
-        if project_compiler and project_declares_vyper:
-            return [*environment, "vyper"]
         return [*environment, *command]
+    project_declares_vyper = _project_declares_vyper(pyproject, marker_environment)
 
     command_index = _uv_run_command_index(command)
     options = _project_uv_options(

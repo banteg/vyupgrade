@@ -1171,6 +1171,49 @@ version = "0.1.0"
     }
 
 
+
+def test_real_explicit_source_compiler_overrides_declared_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "explicit-source-compiler"
+version = "0.1.0"
+dependencies = ["vyper==0.4.3"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.3\n", encoding="utf-8")
+    requested_compiler = project / "missing-vyper"
+
+    result = compile_source_file(
+        contract,
+        Config(
+            paths=(contract,),
+            target_version="0.4.3",
+            source_vyper=str(requested_compiler),
+        ),
+        "0.4.3",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "launch"
+    assert result.compiler_authority == "explicit-executable"
+    assert result.command is not None
+    compiler_index = result.command.index(str(requested_compiler))
+    assert result.command[compiler_index:] == [
+        str(requested_compiler),
+        "-f",
+        "abi,method_identifiers,layout,ast",
+        "-p",
+        str(project),
+        "-p",
+        str(project),
+        str(contract),
+    ]
+
 def test_real_compiler_overlay_uses_project_interpreter(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
