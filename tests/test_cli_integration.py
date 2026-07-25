@@ -669,6 +669,53 @@ def test_target_validation_does_not_normalize_selected_candidate(tmp_path: Path)
     assert contract.read_text(encoding="utf-8") == original
 
 
+def test_real_compiler_validates_and_writes_source_without_pragma(tmp_path: Path) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def value() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+    second_report = tmp_path / "second-report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--strip-pragma",
+            "--report-json",
+            str(report),
+        ]
+    )
+    second_code = main(
+        [
+            str(contract),
+            "--check",
+            "--strip-pragma",
+            "--report-json",
+            str(second_report),
+        ]
+    )
+
+    assert code == 0
+    assert second_code == 0
+    assert contract.read_text(encoding="utf-8") == """@external
+def value() -> uint256:
+    return 1
+"""
+    file = json.loads(report.read_text())["files"][0]
+    assert file["validation"]["source_compile"] == "passed"
+    assert file["validation"]["target_compile"] == "passed"
+    assert file["validation"]["abi_equal"] is True
+    assert file["validation"]["method_ids_equal"] is True
+    assert file["validation"]["storage_layout_equal"] is True
+    assert json.loads(second_report.read_text())["files"][0]["changed"] is False
+
+
 def test_real_compiler_include_dependencies_upgrades_closure(
     tmp_path: Path,
 ) -> None:
@@ -859,8 +906,10 @@ def __init__():
     assert (output / "token.vy").is_file()
 
 
+@pytest.mark.parametrize("strip_pragma", [False, True])
 def test_real_compiler_closure_output_tree_compiles_standalone(
     tmp_path: Path,
+    strip_pragma: bool,
 ) -> None:
     project_root = tmp_path / "project"
     project = project_root / "main.vy"
@@ -890,6 +939,8 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
         "--closure-output",
         str(output),
     ]
+    if strip_pragma:
+        arguments.append("--strip-pragma")
 
     code = main(arguments)
     first_hash = _tree_sha256(output)
@@ -911,6 +962,11 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
     assert project.read_text(encoding="utf-8") == project_source
     assert dependency.read_text(encoding="utf-8") == dependency_source
     assert (output / "depkg" / "mod.vy").is_file()
+    if strip_pragma:
+        assert not entry.read_text(encoding="utf-8").startswith(("# @version", "#pragma"))
+        assert not (output / "depkg" / "mod.vy").read_text(
+            encoding="utf-8"
+        ).startswith(("# @version", "#pragma"))
     assert _tree_sha256(output) == first_hash
 
 

@@ -108,6 +108,33 @@ def __init__():
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
 
+def test_write_mode_can_strip_version_pragma(tmp_path: Path, passing_compiler) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef value() -> uint256:\n    return 1\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--strip-pragma",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert contract.read_text(encoding="utf-8").startswith("@external\n")
+    fixes = json.loads(report.read_text())["files"][0]["fixes"]
+    assert any(
+        fix["rule"] == "VY001" and fix["message"] == "removed version pragma"
+        for fix in fixes
+    )
+
+
 def test_broad_pragma_source_validation_uses_target_bounded_compiler(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1175,6 +1202,27 @@ report-json = "{report}"
     assert report.exists()
 
 
+def test_pyproject_can_strip_version_pragma(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("# @version 0.3.10\nx: uint256\n", encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f'''[tool.vyupgrade]
+paths = ["{contract}"]
+strip-pragma = true
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = main(["--write"])
+
+    assert code == 0
+    assert contract.read_text(encoding="utf-8") == "x: uint256\n"
+
+
 def test_pyproject_can_waive_unvalidated_source(
     tmp_path: Path, monkeypatch, passing_compiler
 ) -> None:
@@ -1784,6 +1832,35 @@ def test_write_include_dependencies_with_closure_output_commits_both(
     assert "#pragma version 0.4.3" in (output / "depkg" / "mod.vy").read_text()
     assert dependency.read_bytes() == dependency_original
     assert not (search_path / "main.vy").exists()
+
+
+def test_strip_pragma_applies_to_closure_output(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
+    output = tmp_path / "output"
+    dependency_original = dependency.read_bytes()
+
+    code = main(
+        [
+            str(project),
+            "--write",
+            "--strip-pragma",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    assert project.read_text(encoding="utf-8") == "from depkg import mod\n"
+    assert (output / "main.vy").read_text(encoding="utf-8") == "from depkg import mod\n"
+    assert (output / "depkg" / "mod.vy").read_text(
+        encoding="utf-8"
+    ) == "VALUE: constant(uint256) = 1\n"
+    assert dependency.read_bytes() == dependency_original
 
 
 def test_closure_output_blocked_when_validation_blocks(

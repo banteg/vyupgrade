@@ -111,6 +111,7 @@ stderr; environment-manager or adapter diagnostics remain separate.
 
 - `--target-version` — target Vyper version or spec (default `0.4.3`).
 - `--source-version` — override the per-file inferred source version.
+- `--strip-pragma` — remove version pragmas from migrated source instead of rewriting or adding one; target compiler selection and compiler-backed validation are unchanged.
 - `--diff` — print a unified diff instead of the report.
 - `--write` — apply changes in place only after the validation decision passes.
 - `--check` — exit non-zero if any file would change; write nothing.
@@ -158,6 +159,7 @@ flags take precedence.
 paths = ["contracts/"]
 target-version = "0.4.3"
 source-version = "infer"
+strip-pragma = false
 report-json = "vyupgrade-report.json"
 aggressive = false
 split-interfaces = false

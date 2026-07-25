@@ -38,6 +38,9 @@ from ..versions import VyperVersion
 def _pragma(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     config = rule_context.config
+    if config.strip_pragma:
+        return _strip_version_pragmas(rule_context)
+
     fixes: list[Fix] = []
     mask = rule_context.code_mask
     pattern = re.compile(
@@ -70,6 +73,35 @@ def _pragma(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]
     pragma = f"#pragma version {config.target_version}\n"
     fixes.append(Fix("VY001", 1, "added version pragma", "", pragma.rstrip()))
     return pragma + rewritten, fixes, []
+
+
+def _strip_version_pragmas(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    mask = rule_context.code_mask
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    pattern = re.compile(
+        r"^[ \t]*#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+[^\r\n]*"
+        r"(?:\r\n|\n|\r|$)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            continue
+        before = match.group(0).rstrip("\r\n")
+        edits.append(TextEdit(match.start(), match.end(), ""))
+        fixes.append(
+            Fix(
+                "VY001",
+                line_number(source, match.start()),
+                "removed version pragma",
+                before,
+                "",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
 
 
 def _legacy_decorators(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
