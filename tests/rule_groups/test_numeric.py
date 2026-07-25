@@ -354,8 +354,7 @@ def f(pool: address, dy: uint256, rates: uint256[N_COINS]) -> uint256:
 
     assert (
         "staticcall Curve(pool).calc_withdraw_one_coin("
-        "dy * PRECISION // rates[1], convert(0, int128))"
-        in result.source
+        "dy * PRECISION // rates[1], convert(0, int128))" in result.source
     )
 
 
@@ -400,7 +399,10 @@ def f(token: address) -> uint256:
 
     result = apply_rules(source, config())
 
-    assert "return 10**18 * self.get_xcp(self.D) // staticcall CurveToken(token).totalSupply()" in result.source
+    assert (
+        "return 10**18 * self.get_xcp(self.D) // staticcall CurveToken(token).totalSupply()"
+        in result.source
+    )
 
 
 def test_self_balance_integer_division_operand(config) -> None:
@@ -610,7 +612,7 @@ def f() -> uint256:
 
     result = apply_rules(source, config())
 
-    assert "* as_wei_value(1, \"ether\")) // self.total_supply" in result.source
+    assert '* as_wei_value(1, "ether")) // self.total_supply' in result.source
 
 
 def test_tab_indented_return_integer_division_uses_function_return_type(config) -> None:

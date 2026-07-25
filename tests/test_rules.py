@@ -264,7 +264,5 @@ def f() -> uint256:
 
     assert result.source == source
     assert result.fixes == []
-    assert [(diag.rule, diag.severity) for diag in result.diagnostics] == [
-        ("VYD018", "error")
-    ]
+    assert [(diag.rule, diag.severity) for diag in result.diagnostics] == [("VYD018", "error")]
     assert "matches no Vyper compiler" in result.diagnostics[0].message

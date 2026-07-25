@@ -65,8 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         format=args.format or pyproject.get("format", "none"),
         allow_unvalidated_source=args.allow_unvalidated_source
         or bool(pyproject.get("allow-unvalidated-source", False)),
-        allow_abi_change=args.allow_abi_change
-        or bool(pyproject.get("allow-abi-change", False)),
+        allow_abi_change=args.allow_abi_change or bool(pyproject.get("allow-abi-change", False)),
         allow_method_id_change=args.allow_method_id_change
         or bool(pyproject.get("allow-method-id-change", False)),
         allow_storage_layout_change=args.allow_storage_layout_change
@@ -94,8 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         and not (config.closure_output or config.closure_archive)
     ):
         print(
-            "--write with --include-dependencies requires "
-            "--closure-output or --closure-archive",
+            "--write with --include-dependencies requires --closure-output or --closure-archive",
             file=sys.stderr,
         )
         return 4
@@ -111,18 +109,14 @@ def main(argv: list[str] | None = None) -> int:
 
     files = discover_files(
         config.paths,
-        excluded_roots=(config.closure_output,)
-        if config.closure_output is not None
-        else (),
+        excluded_roots=(config.closure_output,) if config.closure_output is not None else (),
     )
     human_reporter = None if config.diff else HumanReporter(sys.stdout)
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
 
     requests = [
-        engine.bounded_migration_request(
-            path, path.read_bytes().decode("utf-8"), config
-        )
+        engine.bounded_migration_request(path, path.read_bytes().decode("utf-8"), config)
         for path in files
     ]
     archive_entry: Path | None = None
@@ -132,21 +126,15 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 4
-    closure_report = (
-        ClosureReport(requested=True) if config.include_dependencies else None
-    )
+    closure_report = ClosureReport(requested=True) if config.include_dependencies else None
     if closure_report is not None and requests:
         dependency_requests, closure = _dependency_requests(requests, config)
         requests += dependency_requests
-        closure_report.dependencies = tuple(
-            str(path) for path in sorted(closure.dependencies)
-        )
+        closure_report.dependencies = tuple(str(path) for path in sorted(closure.dependencies))
     batch = engine.prepare_migrations(requests, config)
     reports, plan, plan_error = _build_migration_plan(batch)
     if plan_error is None:
-        validation_decision = _validate_or_layout_conflict(
-            batch, config, plan.candidate_source
-        )
+        validation_decision = _validate_or_layout_conflict(batch, config, plan.candidate_source)
         if validation_decision is None:
             return 4
     else:
@@ -177,21 +165,14 @@ def main(argv: list[str] | None = None) -> int:
                 run_report.validation_decision = validation_decision
                 if not validation_decision.write_allowed:
                     run_report.write_status = "blocked"
-                    run_report.write_output = (
-                        "formatted candidates did not pass final validation"
-                    )
+                    run_report.write_output = "formatted candidates did not pass final validation"
             else:
                 run_report.write_status = "failed"
                 run_report.write_output = "formatter failed before the write transaction"
-        if (
-            run_report.formatter_status != "failed"
-            and validation_decision.write_allowed
-        ):
+        if run_report.formatter_status != "failed" and validation_decision.write_allowed:
             try:
                 run_report.wrote_changes = plan.commit()
-                run_report.write_status = (
-                    "committed" if run_report.wrote_changes else "no-op"
-                )
+                run_report.write_status = "committed" if run_report.wrote_changes else "no-op"
                 run_report.wrote_changes, _mismatches = plan.refresh_final_state()
             except WriteTransactionError as exc:
                 changed, mismatches = plan.refresh_final_state()
@@ -201,8 +182,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 run_report.write_output = str(exc)
                 if mismatches:
-                    run_report.write_output += "; on-disk bytes differ from candidates: " + ", ".join(
-                        str(path) for path in mismatches
+                    run_report.write_output += (
+                        "; on-disk bytes differ from candidates: "
+                        + ", ".join(str(path) for path in mismatches)
                     )
 
     if config.include_dependencies and (
@@ -228,9 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_closure_output(config, batch, plan, run_report)
             if config.closure_archive is not None:
                 assert archive_entry is not None
-                _emit_closure_archive(
-                    config, archive_entry, batch, plan, run_report
-                )
+                _emit_closure_archive(config, archive_entry, batch, plan, run_report)
 
     diff_chunks = plan.diff_chunks()
     if config.include_dependencies:
@@ -283,12 +263,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if any(diag.severity == "error" for file in reports for diag in file.diagnostics):
         return 5
-    if (
-        run_report.closure is not None
-        and (
-            run_report.closure.output_status == "blocked"
-            or run_report.closure.archive_status == "blocked"
-        )
+    if run_report.closure is not None and (
+        run_report.closure.output_status == "blocked"
+        or run_report.closure.archive_status == "blocked"
     ):
         return 9
     return 0
@@ -308,9 +285,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--select", default="")
     parser.add_argument("--ignore", default="")
     parser.add_argument("--aggressive", action="store_true")
-    parser.add_argument(
-        "--include-dependencies", "--upgrade-closure", action="store_true"
-    )
+    parser.add_argument("--include-dependencies", "--upgrade-closure", action="store_true")
     parser.add_argument("--test-command")
     parser.add_argument("--source-vyper")
     parser.add_argument("--target-vyper")
@@ -391,10 +366,7 @@ def _dependency_requests(
 def _dependency_diff_chunks(batch: engine.MigrationBatch) -> list[str]:
     chunks: list[str] = []
     for migration in batch.files:
-        if (
-            migration.request.role != "dependency"
-            or migration.original == migration.rewrite.source
-        ):
+        if migration.request.role != "dependency" or migration.original == migration.rewrite.source:
             continue
         chunks.extend(
             difflib.unified_diff(
@@ -447,10 +419,7 @@ def _emit_closure_archive(
 
 
 def _closure_files_validated(reports: list[FileReport]) -> bool:
-    return all(
-        report.validation_decision.status in {"passed", "waived"}
-        for report in reports
-    )
+    return all(report.validation_decision.status in {"passed", "waived"} for report in reports)
 
 
 def _validate_or_layout_conflict(
@@ -587,8 +556,7 @@ def _run_mamushi(plan: MigrationPlan, report: RunReport) -> None:
 
         try:
             formatted = {
-                destination: staged_path.read_bytes()
-                for destination, staged_path in staged.items()
+                destination: staged_path.read_bytes() for destination, staged_path in staged.items()
             }
             for candidate in formatted.values():
                 candidate.decode("utf-8")
@@ -629,9 +597,7 @@ def _run_test_command(command: str, report: RunReport) -> None:
         report.test_output = output or None
     else:
         report.test_output = "\n".join(
-            part
-            for part in (f"test command exited with status {proc.returncode}", output)
-            if part
+            part for part in (f"test command exited with status {proc.returncode}", output) if part
         )
 
 

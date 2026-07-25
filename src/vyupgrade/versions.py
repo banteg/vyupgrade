@@ -33,11 +33,14 @@ KNOWN_VERSIONS = tuple(
     ]
 )
 
-SUPPORTED_RELEASE_VERSIONS = frozenset(
-    Version(f"0.{minor}.{patch}")
-    for minor, last_patch in ((2, 16), (3, 10), (4, 3))
-    for patch in range(1 if minor == 2 else 0, last_patch + 1)
-) | ALPHA_RELEASES
+SUPPORTED_RELEASE_VERSIONS = (
+    frozenset(
+        Version(f"0.{minor}.{patch}")
+        for minor, last_patch in ((2, 16), (3, 10), (4, 3))
+        for patch in range(1 if minor == 2 else 0, last_patch + 1)
+    )
+    | ALPHA_RELEASES
+)
 
 
 @dataclass(frozen=True)
@@ -126,60 +129,17 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
     return str(version) if version else None
 
 
-def compiler_version_for_source(spec: str | None, source: str) -> str | None:
-    version = parse_version(compiler_version_for_spec(spec))
-    versions = known_versions_satisfying(spec)
-    if version is None or not versions:
-        return str(version) if version else None
-    hinted = _source_syntax_floor(source)
-    if hinted is None or version >= hinted:
-        return str(version)
-    for candidate in versions:
-        if candidate >= hinted:
-            return str(candidate)
-    return str(version)
-
-
 def compiler_version_for_source_validation(
-    spec: str | None, target_spec: str, source: str
+    spec: str | None, target_spec: str, _source: str
 ) -> str | None:
+    """Select the newest known satisfying release that is no newer than the target."""
     versions = known_versions_satisfying(spec)
     if not versions:
-        return compiler_version_for_source(spec, source)
+        return compiler_version_for_spec(spec)
 
     target = parse_version(compiler_version_for_spec(target_spec)) or parse_version(target_spec)
     candidates = tuple(version for version in versions if target is None or version <= target)
-    if not candidates:
-        return compiler_version_for_source(spec, source)
-
-    hinted = _source_syntax_floor(source)
-    if hinted is not None:
-        hinted_candidates = tuple(version for version in candidates if version >= hinted)
-        if hinted_candidates:
-            candidates = hinted_candidates
-
-    return str(candidates[-1])
-
-
-def _source_syntax_floor(source: str) -> VyperVersion | None:
-    floors: list[VyperVersion] = []
-    if re.search(r"\buint8\b", source):
-        floors.append(Version("0.3.1"))
-    if re.search(r"\buint(?:16|32|64)\b", source):
-        floors.append(Version("0.3.2"))
-    if re.search(r"\bDynArray\s*\[[^\]]+,\s*[A-Z_][A-Z0-9_]*\s*\]", source):
-        floors.append(Version("0.3.7"))
-    elif re.search(r"\bDynArray\s*\[", source):
-        floors.append(Version("0.3.3"))
-    if re.search(r"(?m)^enum\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
-        floors.append(Version("0.3.4"))
-    if re.search(r"\bimmutable\s*\(", source):
-        floors.append(Version("0.3.1"))
-    if re.search(r"\bsend\s*\([^)]*\bgas\s*=", source):
-        floors.append(Version("0.3.8"))
-    if re.search(r"(?m)^\s*error\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
-        floors.append(Version("0.5.0a3"))
-    return max(floors) if floors else None
+    return str(candidates[-1] if candidates else versions[-1])
 
 
 def default_evm_version_for_spec(spec: str | None) -> str | None:
@@ -271,7 +231,10 @@ def _parse_clauses(spec: str) -> list[tuple[str, VyperVersion]]:
 def _has_lower_bound(spec: str) -> bool:
     specifiers = _specifier_set(spec)
     if specifiers is not None:
-        return any(_specifier_is_lower_bound(specifier.operator, specifier.version) for specifier in specifiers)
+        return any(
+            _specifier_is_lower_bound(specifier.operator, specifier.version)
+            for specifier in specifiers
+        )
     return any(op in {">=", ">", "=="} for op, _version in _parse_clauses(spec))
 
 

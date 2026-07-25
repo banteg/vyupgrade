@@ -50,12 +50,12 @@ def test_render_text_includes_compile_errors() -> None:
     assert 'Version specification "0.2.11" is not compatible' in text
 
 
-def test_json_report_declares_additive_schema_version() -> None:
+def test_json_report_declares_attestation_schema_version() -> None:
     report = RunReport(source_version=None, target_version="0.4.3", files=[])
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 4
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
     assert data["closure"] is None
@@ -179,7 +179,11 @@ def test_write_human_report_uses_plain_text_for_non_tty_streams() -> None:
     report = RunReport(
         source_version=None,
         target_version="0.4.3",
-        files=[FileReport(path=Path("ok.vy"), changed=True, source_compile="passed", target_compile="passed")],
+        files=[
+            FileReport(
+                path=Path("ok.vy"), changed=True, source_compile="passed", target_compile="passed"
+            )
+        ],
     )
     stream = StringIO()
 
@@ -333,9 +337,7 @@ def test_render_rich_splits_diagnostic_line_styles() -> None:
     render_rich(report, console)
 
     assert (
-        "  \x1b[1;32mVY001\x1b[0m"
-        "\x1b[32m modernized version pragma\x1b[0m"
-        "\x1b[2m (line 2)\x1b[0m"
+        "  \x1b[1;32mVY001\x1b[0m\x1b[32m modernized version pragma\x1b[0m\x1b[2m (line 2)\x1b[0m"
     ) in stream.getvalue()
 
 

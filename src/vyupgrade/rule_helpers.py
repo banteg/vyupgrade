@@ -263,7 +263,9 @@ def lhs_declared_type(line: str) -> str | None:
 
 
 def lhs_assigned_type(line: str, vars_for_line: dict[str, str]) -> str | None:
-    match = re.match(r"\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)(\s*\[[^=]+\])?\s*(?://=|[-+*/%]?=)", line)
+    match = re.match(
+        r"\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)(\s*\[[^=]+\])?\s*(?://=|[-+*/%]?=)", line
+    )
     if not match:
         return None
     type_name = vars_for_line.get(match.group(1))

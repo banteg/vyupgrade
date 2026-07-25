@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Made source validation use the nearest declared project environment and
+  removed source-validation import guessing and retry behavior.
+- Replaced JSON report schema v3 with v4, which records producer identity and
+  distinct source and target attestations: the declared snapshot and compiler
+  declarations, compiler authority and executable/artifact identity, manifest,
+  lock, resolved packages and sources, process completion and exit status,
+  validated sources, exact compile attempt, typed failure origin, and compiler
+  output on failure.
+
 ## 0.6.0 - 2026-07-16
 
 - Reject source version specifications that match no compiler supported by the

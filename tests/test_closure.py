@@ -22,38 +22,26 @@ def _write_closure_fixture(
     (project_root / "pyproject.toml").write_text(
         '[project]\nname = "closure-project"\n', encoding="utf-8"
     )
-    project.write_text(
-        "# @version 0.3.10\nfrom depkg import util, IUtil\n", encoding="utf-8"
-    )
-    dependency.write_text(
-        "# @version 0.3.10\nVALUE: constant(uint256) = 1\n", encoding="utf-8"
-    )
+    project.write_text("# @version 0.3.10\nfrom depkg import util, IUtil\n", encoding="utf-8")
+    dependency.write_text("# @version 0.3.10\nVALUE: constant(uint256) = 1\n", encoding="utf-8")
     interface.write_text("[]\n", encoding="utf-8")
     candidates = {
         project: "#pragma version 0.4.3\nfrom depkg import util, IUtil\n",
         dependency: (
-            "#pragma version 0.4.3\n"
-            "VALUE: constant(uint256) = 2\n"
-            "# exact dependency candidate\n"
+            "#pragma version 0.4.3\nVALUE: constant(uint256) = 2\n# exact dependency candidate\n"
         ),
     }
     return candidates, (search_root,), (project, dependency, interface)
 
 
 def _tree_bytes(root: Path) -> dict[Path, bytes]:
-    return {
-        path.relative_to(root): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
 def test_write_closure_output_materializes_import_root_relative_tree(
     tmp_path: Path,
 ) -> None:
-    sources, search_paths, (_project, dependency, _interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+    sources, search_paths, (_project, dependency, _interface) = _write_closure_fixture(tmp_path)
     output = tmp_path / "output"
 
     result = write_closure_output(output, sources, "0.4.3", search_paths)
@@ -160,9 +148,7 @@ def test_write_closure_output_never_touches_sources(tmp_path: Path) -> None:
     sources, search_paths, inputs = _write_closure_fixture(tmp_path)
     before = {path: path.read_bytes() for path in inputs}
 
-    result = write_closure_output(
-        tmp_path / "output", sources, "0.4.3", search_paths
-    )
+    result = write_closure_output(tmp_path / "output", sources, "0.4.3", search_paths)
 
     assert result.status == "written"
     assert {path: path.read_bytes() for path in inputs} == before
@@ -216,9 +202,7 @@ def test_write_closure_output_reports_layout_conflict_as_failed(
 def test_write_closure_output_refuses_linked_dependency_destination(
     tmp_path: Path, link_kind: str
 ) -> None:
-    sources, search_paths, (_project, dependency, _interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+    sources, search_paths, (_project, dependency, _interface) = _write_closure_fixture(tmp_path)
     original = dependency.read_bytes()
     output = tmp_path / "output"
     linked = output / "depkg" / "util.vy"
@@ -267,9 +251,7 @@ def test_write_closure_output_deduplicates_identical_destinations(
     second.write_text(source)
     output = tmp_path / "output"
 
-    result = write_closure_output(
-        output, {first: source, second: source}, "0.4.3"
-    )
+    result = write_closure_output(output, {first: source, second: source}, "0.4.3")
 
     assert result.status == "written"
     assert result.files == (output / "pkg" / "util.vy",)
@@ -289,9 +271,7 @@ def test_write_closure_archive_passes_through_compile_result(
     expected_status: str,
     expected_error: str | None,
 ) -> None:
-    sources, search_paths, (entry, _dependency, _interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+    sources, search_paths, (entry, _dependency, _interface) = _write_closure_fixture(tmp_path)
     output = tmp_path / "out.vyz"
     captured: list[tuple[Path, str, Path]] = []
 
@@ -305,9 +285,7 @@ def test_write_closure_archive_passes_through_compile_result(
         captured.append((path, source, archive))
         return compile_result
 
-    monkeypatch.setattr(
-        compiler, "compile_target_archive", fake_compile_target_archive
-    )
+    monkeypatch.setattr(compiler, "compile_target_archive", fake_compile_target_archive)
 
     result = write_closure_archive(
         output,
@@ -327,9 +305,7 @@ def test_write_closure_archive_passes_through_compile_result(
 
 
 def test_write_closure_archive_missing_entry_fails(tmp_path: Path) -> None:
-    sources, search_paths, (entry, _dependency, _interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+    sources, search_paths, (entry, _dependency, _interface) = _write_closure_fixture(tmp_path)
     missing = entry.with_name("missing.vy")
     output = tmp_path / "out.vyz"
 
@@ -355,17 +331,13 @@ def test_write_closure_archive_missing_entry_fails(tmp_path: Path) -> None:
 def test_write_closure_archive_rejects_source_destinations(
     tmp_path: Path, monkeypatch, destination: str
 ) -> None:
-    sources, search_paths, (entry, dependency, interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+    sources, search_paths, (entry, dependency, interface) = _write_closure_fixture(tmp_path)
     if destination == "entry":
         output = entry
     else:
         output = tmp_path / "out.vyz"
         output.symlink_to(dependency)
-    original_bytes = {
-        path: path.read_bytes() for path in (entry, dependency, interface)
-    }
+    original_bytes = {path: path.read_bytes() for path in (entry, dependency, interface)}
 
     def unexpected_compile(*_args, **_kwargs):
         pytest.fail("source destination must be rejected before archive compilation")
@@ -394,12 +366,8 @@ def test_write_closure_archive_rejects_source_destinations(
         assert output.is_symlink()
 
 
-def test_write_closure_archive_uses_closure_mode_overlay(
-    tmp_path: Path, monkeypatch
-) -> None:
-    sources, search_paths, (entry, dependency, _interface) = (
-        _write_closure_fixture(tmp_path)
-    )
+def test_write_closure_archive_uses_closure_mode_overlay(tmp_path: Path, monkeypatch) -> None:
+    sources, search_paths, (entry, dependency, _interface) = _write_closure_fixture(tmp_path)
     captured_relative_paths: dict[Path, Path] = {}
 
     def fake_compile_target_archive(
@@ -417,9 +385,7 @@ def test_write_closure_archive_uses_closure_mode_overlay(
         )
         return compiler.CompileResult("passed")
 
-    monkeypatch.setattr(
-        compiler, "compile_target_archive", fake_compile_target_archive
-    )
+    monkeypatch.setattr(compiler, "compile_target_archive", fake_compile_target_archive)
 
     result = write_closure_archive(
         tmp_path / "out.vyz",

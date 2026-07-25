@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -15,12 +16,19 @@ from .compiler import (
 )
 from .interfaces import split_interfaces_to_vyi
 from .models import (
+    CompileAttempt,
+    CompilerDeclaration,
+    ContentIdentity,
+    DeclaredSpec,
+    DependencyContext,
     Config,
     Diagnostic,
     FileReport,
     GeneratedFile,
     RewriteResult,
     ValidationDecision,
+    TargetFailureOrigin,
+    ValidationAttestation,
 )
 from .rule_registry import is_enabled
 from .rules import RULE_CHANGES, apply_rules
@@ -119,20 +127,24 @@ def bounded_migration_request(
     return MigrationRequest(path, original, source_version, attempts, role=role)
 
 
-def prepare_migrations(
-    requests: Iterable[MigrationRequest], config: Config
-) -> MigrationBatch:
+def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> MigrationBatch:
     """Compile and rewrite sources without mutating their destinations."""
+    request_list = tuple(requests)
+    snapshot_sources = tuple(
+        ContentIdentity(
+            str(request.path.resolve()),
+            hashlib.sha256(request.original.encode()).hexdigest(),
+        )
+        for request in request_list
+    )
     files: list[MigrationFile] = []
-    for request in requests:
+    for request in request_list:
         attempt, source_compile = _compile_source(request, config)
-        source_version = (
-            attempt.rule_version if attempt is not None else request.source_version
+        source_version = attempt.rule_version if attempt is not None else request.source_version
+        source_compiler = source_compile.resolved_compiler or (
+            attempt.compiler_label if attempt is not None else None
         )
-        source_compiler = attempt.compiler_label if attempt is not None else None
-        source_ast = (
-            source_compile.artifacts.get("ast") if source_compile.artifacts else None
-        )
+        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         # Config.source_ast remains the compatibility bridge for rules, but this
         # derived config belongs to this file and is never reused by another file.
         file_config = replace(
@@ -167,17 +179,21 @@ def prepare_migrations(
             source_version=source_version,
             source_compiler=source_compiler,
             source_compile=source_compile.status,
-            source_unavailable_formats=list(
-                getattr(source_compile, "unavailable_formats", ())
-            ),
-            source_error=(
-                source_compile.stderr if source_compile.status == "failed" else None
-            ),
+            source_unavailable_formats=list(getattr(source_compile, "unavailable_formats", ())),
+            source_error=(source_compile.stderr if source_compile.status == "failed" else None),
+            source_attestation=_validation_attestation(
+                source_compile,
+                _declared_spec(snapshot_sources, source_compile.compiler_declarations),
+                attempt_source=ContentIdentity(
+                    str(request.path.resolve()),
+                    hashlib.sha256(request.original.encode()).hexdigest(),
+                ),
+            )
+            if source_compile.status != "skipped"
+            else None,
         )
         if source_compile.status != "skipped":
-            report.source_unavailable_artifacts = unavailable_validation_artifacts(
-                source_compile
-            )
+            report.source_unavailable_artifacts = unavailable_validation_artifacts(source_compile)
         files.append(
             MigrationFile(
                 request,
@@ -212,6 +228,13 @@ def validate_migrations(
     """Validate one coherent candidate overlay and return its typed decision."""
     resolve_candidate = candidate_source or _unchanged_candidate
     target_sources = candidate_sources(batch, resolve_candidate)
+    target_declared_spec = _declared_spec(
+        tuple(
+            ContentIdentity(str(path.resolve()), hashlib.sha256(source.encode()).hexdigest())
+            for path, source in target_sources.items()
+        ),
+        (CompilerDeclaration("target-version", config.target_version),),
+    )
 
     with target_overlay(
         target_sources,
@@ -220,9 +243,7 @@ def validate_migrations(
         include_dependencies=config.include_dependencies,
     ) as overlay:
         for migration in batch.files:
-            _reset_target_validation(
-                migration.report, migration.validation_diagnostics
-            )
+            _reset_target_validation(migration.report, migration.validation_diagnostics)
             migration.target_compile = None
             source_context = MigrationContext.from_specs(
                 migration.request.source_version, config.target_version
@@ -239,7 +260,11 @@ def validate_migrations(
                 overlay,
             )
             migration.target_compile = target_compile
-            _record_target_compile(migration.report, target_compile)
+            _record_target_compile(
+                migration.report,
+                target_compile,
+                target_declared_spec,
+            )
             (
                 migration.report.abi_equal,
                 migration.report.method_ids_equal,
@@ -260,9 +285,7 @@ def validate_migrations(
             )
 
         for migration in batch.generated:
-            _reset_target_validation(
-                migration.report, migration.validation_diagnostics
-            )
+            _reset_target_validation(migration.report, migration.validation_diagnostics)
             migration.target_compile = None
             target_compile = compile_target_source(
                 migration.file.path,
@@ -271,7 +294,11 @@ def validate_migrations(
                 overlay,
             )
             migration.target_compile = target_compile
-            _record_target_compile(migration.report, target_compile)
+            _record_target_compile(
+                migration.report,
+                target_compile,
+                target_declared_spec,
+            )
 
     return decide_run_validation(batch.reports, config)
 
@@ -285,12 +312,8 @@ def _compile_source(
     first_attempt: SourceCompileAttempt | None = None
     first_result: CompileResult | None = None
     for attempt in request.source_attempts:
-        attempt_config = replace(
-            config, source_version=attempt.rule_version, source_ast=None
-        )
-        result = compile_source_file(
-            request.path, attempt_config, attempt.compile_version
-        )
+        attempt_config = replace(config, source_version=attempt.rule_version, source_ast=None)
+        result = compile_source_file(request.path, attempt_config, attempt.compile_version)
         if first_result is None:
             first_attempt = attempt
             first_result = result
@@ -304,9 +327,7 @@ def _unchanged_candidate(_path: Path, source: str) -> str:
     return source
 
 
-def candidate_sources(
-    batch: MigrationBatch, resolve_candidate: CandidateSource
-) -> dict[Path, str]:
+def candidate_sources(batch: MigrationBatch, resolve_candidate: CandidateSource) -> dict[Path, str]:
     candidates = [
         *(
             (
@@ -367,24 +388,103 @@ def candidate_sources(
     return target_sources
 
 
-def _record_target_compile(report: FileReport, target_compile: CompileResult) -> None:
+def _declared_spec(
+    sources: tuple[ContentIdentity, ...],
+    compiler_declarations: tuple[CompilerDeclaration, ...],
+) -> DeclaredSpec:
+    digest = hashlib.sha256()
+    ordered_sources = tuple(sorted(sources, key=lambda source: source.path))
+    for source in ordered_sources:
+        digest.update(source.path.encode())
+        digest.update(b"\0")
+        digest.update(source.sha256.encode())
+        digest.update(b"\0")
+    return DeclaredSpec(digest.hexdigest(), ordered_sources, compiler_declarations)
+
+
+def _validation_attestation(
+    result: CompileResult,
+    declared_spec: DeclaredSpec,
+    *,
+    attempt_source: ContentIdentity,
+    failure_origin: TargetFailureOrigin | None = None,
+) -> ValidationAttestation:
+    origin = failure_origin if failure_origin is not None else result.failure_origin
+    attempt = CompileAttempt(
+        sequence=1,
+        source=attempt_source,
+        compiler_started=result.compiler_started,
+        completion_status=result.completion_status,
+        exit_status=result.exit_status,
+        failure_origin=origin,
+    )
+    return ValidationAttestation(
+        declared_spec=declared_spec,
+        authority_rule=result.compiler_authority,
+        resolved_compiler=result.compiler_identity,
+        dependency_context=result.dependency_context or DependencyContext(mode="isolated"),
+        compiler_started=result.compiler_started,
+        completion_status=result.completion_status,
+        exit_status=result.exit_status,
+        validated_source_set=result.validated_sources,
+        attempt_sequence=(attempt,),
+        failure_origin=origin,
+        compiler_output=result.compiler_output,
+    )
+
+
+def _target_failure_origin(
+    origin: object,
+    *,
+    role: str,
+) -> TargetFailureOrigin | None:
+    if origin == "compiler":
+        return "fixed-target-dependency" if role == "dependency" else "fixed-target-rewrite"
+    if origin in {
+        "compiler-internal",
+        "environment",
+        "launch",
+        "timeout",
+        "adapter",
+    }:
+        return origin
+    return None
+
+
+def _record_target_compile(
+    report: FileReport,
+    target_compile: CompileResult,
+    declared_spec: DeclaredSpec,
+) -> None:
     report.target_compile = target_compile.status
     report.target_unavailable_artifacts = unavailable_validation_artifacts(target_compile)
-    report.target_unavailable_formats = list(
-        getattr(target_compile, "unavailable_formats", ())
+    report.target_unavailable_formats = list(getattr(target_compile, "unavailable_formats", ()))
+    report.target_error = target_compile.stderr if target_compile.status == "failed" else None
+    report_source = next(
+        (source for source in declared_spec.sources if source.path == str(report.path.resolve())),
+        declared_spec.sources[0],
     )
-    report.target_error = (
-        target_compile.stderr if target_compile.status == "failed" else None
-    )
+    if target_compile.status != "skipped":
+        origin = _target_failure_origin(target_compile.failure_origin, role=report.role)
+        attempt_source = (
+            target_compile.validated_sources[0]
+            if target_compile.validated_sources
+            else report_source
+        )
+        report.target_attestation = _validation_attestation(
+            target_compile,
+            declared_spec,
+            attempt_source=attempt_source,
+            failure_origin=origin,
+        )
 
 
-def _reset_target_validation(
-    report: FileReport, validation_diagnostics: list[Diagnostic]
-) -> None:
+def _reset_target_validation(report: FileReport, validation_diagnostics: list[Diagnostic]) -> None:
     report.target_compile = "skipped"
     report.target_unavailable_artifacts.clear()
     report.target_unavailable_formats.clear()
     report.target_error = None
+    report.target_attestation = None
     report.abi_equal = None
     report.method_ids_equal = None
     report.storage_layout_equal = None
@@ -395,9 +495,7 @@ def _reset_target_validation(
     validation_ids = {id(diagnostic) for diagnostic in validation_diagnostics}
     if validation_ids:
         report.diagnostics = [
-            diagnostic
-            for diagnostic in report.diagnostics
-            if id(diagnostic) not in validation_ids
+            diagnostic for diagnostic in report.diagnostics if id(diagnostic) not in validation_ids
         ]
     validation_diagnostics.clear()
 
@@ -442,9 +540,7 @@ def _rule_enabled(rule: str, source_version: str | None, config: Config) -> bool
     return is_enabled(rule, config, context, RULE_CHANGES)
 
 
-def _evm_default_diagnostic(
-    source_version: str | None, target_version: str
-) -> Diagnostic | None:
+def _evm_default_diagnostic(source_version: str | None, target_version: str) -> Diagnostic | None:
     source_evm = default_evm_version_for_spec(source_version)
     target_evm = default_evm_version_for_spec(target_version)
     if source_evm is not None and target_evm is not None:

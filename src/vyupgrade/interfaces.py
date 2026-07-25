@@ -68,7 +68,10 @@ def _top_level_interface_blocks(source: str) -> list[_InterfaceBlock]:
     while index < len(lines):
         line = lines[index]
         start = offsets[index]
-        match = re.match(r"interface[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*\([^)]*\))?[ \t]*:[ \t]*(?:#.*)?(?:\n)?$", line)
+        match = re.match(
+            r"interface[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*\([^)]*\))?[ \t]*:[ \t]*(?:#.*)?(?:\n)?$",
+            line,
+        )
         if match is None or not span_is_code(mask, start, start + match.end(1)):
             index += 1
             continue
@@ -140,12 +143,17 @@ def _interface_body_to_vyi(body: str) -> str:
             header_lines.append(lines[index])
             index += 1
         mutability = _interface_def_mutability("".join(header_lines))
-        if mutability is None and index < len(lines) and lines[index].strip() in {
-            "view",
-            "pure",
-            "payable",
-            "nonpayable",
-        }:
+        if (
+            mutability is None
+            and index < len(lines)
+            and lines[index].strip()
+            in {
+                "view",
+                "pure",
+                "payable",
+                "nonpayable",
+            }
+        ):
             mutability = lines[index].strip()
             index += 1
         stub = _interface_def_stub("".join(header_lines), mutability)
@@ -155,11 +163,7 @@ def _interface_body_to_vyi(body: str) -> str:
 
 def _dedent_interface_body(body: str) -> str:
     lines = body.splitlines(keepends=True)
-    indents = [
-        len(line) - len(line.lstrip(" \t"))
-        for line in lines
-        if line.strip()
-    ]
+    indents = [len(line) - len(line.lstrip(" \t")) for line in lines if line.strip()]
     width = min(indents) if indents else 0
     return "".join(line[width:] if len(line) >= width else line for line in lines)
 

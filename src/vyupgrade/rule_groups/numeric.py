@@ -128,9 +128,7 @@ def _math_builtin(
     if math_binding is None:
         math_binding = _fresh_math_binding(source)
         import_line = (
-            "import math\n"
-            if math_binding == "math"
-            else f"import math as {math_binding}\n"
+            "import math\n" if math_binding == "math" else f"import math as {math_binding}\n"
         )
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -485,7 +483,9 @@ def _replace_shift_builtin(
             elif negative_expr is not None:
                 vars_for_line = facts.vars_at_line(line_number(current, match.start()))
                 negative_amount = negative_expr.group(1).strip()
-                if _local_name_assigned_negative_integer(current, match.start(), negative_amount, vars_for_line):
+                if _local_name_assigned_negative_integer(
+                    current, match.start(), negative_amount, vars_for_line
+                ):
                     replacement = f"({value} << convert(-{negative_amount}, uint256))"
                 else:
                     replacement = (
@@ -498,7 +498,12 @@ def _replace_shift_builtin(
                 amount = constant_values[positive_constant.group(1)]
                 operator = "<<" if amount >= 0 else ">>"
                 replacement = f"({value} {operator} {abs(amount)})"
-            elif _local_name_assigned_negative_integer(current, match.start(), shift_by, facts.vars_at_line(line_number(current, match.start()))):
+            elif _local_name_assigned_negative_integer(
+                current,
+                match.start(),
+                shift_by,
+                facts.vars_at_line(line_number(current, match.start())),
+            ):
                 replacement = f"({value} >> convert(-{shift_by}, uint256))"
             elif convert_constant is not None and convert_constant.group(1) in constant_values:
                 amount = constant_values[convert_constant.group(1)]
@@ -520,7 +525,7 @@ def _replace_shift_builtin(
                             line_number(current, match.start()),
                             "shift() with non-literal amount needs manual << or >> review",
                         )
-                )
+                    )
                 continue
             if not rule_context.is_enabled("VY111"):
                 continue
@@ -572,7 +577,11 @@ def _local_name_assigned_negative_integer(
     if not _is_signed_integer_type(vars_for_line.get(name)):
         return False
     line_start = source.rfind("\n", 0, index) + 1
-    current_line = source[line_start : source.find("\n", line_start) if source.find("\n", line_start) != -1 else len(source)]
+    current_line = source[
+        line_start : source.find("\n", line_start)
+        if source.find("\n", line_start) != -1
+        else len(source)
+    ]
     current_indent = len(current_line) - len(current_line.lstrip(" \t"))
     for line in reversed(source[:line_start].splitlines()):
         stripped = line.strip()
@@ -702,11 +711,12 @@ def _redundant_integer_convert(
             continue
         if target != "uint256" or expr.lstrip().startswith("-") or not re.search(r"[-+*/%]", expr):
             continue
-        if _integerish_expression(expr, vars_for_line) and not _expression_has_signed_integer(
-            expr, vars_for_line
-        ) and not _expression_has_narrow_unsigned_integer(
-            expr, vars_for_line
-        ) and not _target_semantic_convert(expr, target):
+        if (
+            _integerish_expression(expr, vars_for_line)
+            and not _expression_has_signed_integer(expr, vars_for_line)
+            and not _expression_has_narrow_unsigned_integer(expr, vars_for_line)
+            and not _target_semantic_convert(expr, target)
+        ):
             replacement = f"({expr})"
             edits.append(TextEdit(match.start(), close + 1, replacement))
             fixes.append(
@@ -725,10 +735,14 @@ def _target_semantic_convert(expr: str, target: str) -> bool:
     target = normalize_type(target)
     if expr == "block.prevhash" and target == "uint256":
         return True
-    return target == "uint256" and re.search(
-        r"\bconvert\s*\([^()\n]+,\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
-        expr,
-    ) is not None
+    return (
+        target == "uint256"
+        and re.search(
+            r"\bconvert\s*\([^()\n]+,\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
+            expr,
+        )
+        is not None
+    )
 
 
 def _redundant_convert_replacement(expr: str) -> str:
@@ -776,9 +790,12 @@ INTEGER_DIVISION_RULES = (
 )
 
 
-
 REDUNDANT_CONVERT_RULES = (
-    Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(crossing("VY051", (0, 4, 0)),)),
+    Rule(
+        "redundant_integer_convert",
+        runner=_redundant_integer_convert,
+        changes=(crossing("VY051", (0, 4, 0)),),
+    ),
 )
 
 LATE_RULES = (

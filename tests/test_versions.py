@@ -7,7 +7,6 @@ from vyupgrade.versions import (
     LEGACY_PRERELEASE_VERSIONS,
     MigrationContext,
     VyperVersion,
-    compiler_version_for_source,
     compiler_version_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
@@ -72,25 +71,6 @@ VERSION: constant(String[32]) = "# pragma version 0.4.2"
 
     assert infer_pragma(source) == "0.3.10"
     assert infer_pragma('''"""\n# @version 0.4.3\n"""\n''') is None
-
-
-def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
-    assert compiler_version_for_source("^0.3.0", "xs: DynArray[String[32], 100]") == "0.3.3"
-    assert compiler_version_for_source("^0.3.3", "xs: DynArray[address, 50_000]") == "0.3.3"
-    assert compiler_version_for_source("^0.3.0", "xs: DynArray[Reward, MAX_REWARDS]") == "0.3.7"
-    assert compiler_version_for_source("^0.3.0", "TOKEN: immutable(address)") == "0.3.1"
-    assert compiler_version_for_source(">=0.3.2", "enum Side:\n    BUY\n") == "0.3.4"
-    assert compiler_version_for_source("^0.3.0", "decimals: public(uint8)") == "0.3.1"
-    assert compiler_version_for_source("^0.3.0", "value: public(uint16)") == "0.3.2"
-    assert compiler_version_for_source("^0.3.0", "send(self.owner, fee, gas=msg.gas)") == "0.3.8"
-    assert compiler_version_for_source(">=0.3.8,<0.4.0", "TOKEN: immutable(address)") == "0.3.8"
-    assert compiler_version_for_source(">=0.3.0,<0.3.4", "enum Side:\n    BUY\n") == "0.3.0"
-    assert (
-        compiler_version_for_source(
-            ">=0.5.0a1,<0.6.0", "error Unauthorized:\n    caller: address\n"
-        )
-        == "0.5.0a3"
-    )
 
 
 def test_source_validation_compiler_uses_newest_target_bounded_version() -> None:

@@ -47,21 +47,14 @@ def test_bounded_request_preserves_cli_compiler_selection(tmp_path: Path) -> Non
         path, source, _config(tmp_path, source_vyper="/tmp/vyper")
     )
 
-    assert inferred.source_attempts == (
-        SourceCompileAttempt("0.4.3", ">0.3.10", "0.4.3"),
-    )
-    assert explicit.source_attempts == (
-        SourceCompileAttempt(">0.3.10", ">0.3.10"),
-    )
+    assert inferred.source_attempts == (SourceCompileAttempt("0.4.3", ">0.3.10", "0.4.3"),)
+    assert explicit.source_attempts == (SourceCompileAttempt(">0.3.10", ">0.3.10"),)
 
 
-def test_prepare_uses_first_passing_retry_and_its_rule_version(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_prepare_uses_first_passing_retry_and_its_rule_version(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "Contract.vy"
     attempts = tuple(
-        SourceCompileAttempt(version, version)
-        for version in ("0.3.0", "0.3.1", "0.3.2")
+        SourceCompileAttempt(version, version) for version in ("0.3.0", "0.3.1", "0.3.2")
     )
     seen: dict[str, object] = {"compile": []}
 
@@ -78,22 +71,17 @@ def test_prepare_uses_first_passing_retry_and_its_rule_version(
     monkeypatch.setattr(engine, "compile_source_file", compile_source)
     monkeypatch.setattr(engine, "apply_rules", apply)
 
-    batch = engine.prepare_migrations(
-        (_request(path, "0.3.0", attempts),), _config(tmp_path)
-    )
+    batch = engine.prepare_migrations((_request(path, "0.3.0", attempts),), _config(tmp_path))
 
     assert seen == {"compile": ["0.3.0", "0.3.1"], "rule_version": "0.3.1"}
     assert batch.files[0].source_version == "0.3.1"
     assert batch.files[0].source_compile.status == "passed"
 
 
-def test_prepare_retains_first_failure_when_all_retries_fail(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_prepare_retains_first_failure_when_all_retries_fail(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "Contract.vy"
     attempts = tuple(
-        SourceCompileAttempt(version, version)
-        for version in ("0.3.0", "0.3.1", "0.3.2")
+        SourceCompileAttempt(version, version) for version in ("0.3.0", "0.3.1", "0.3.2")
     )
     seen: dict[str, object] = {"compile": []}
 
@@ -108,9 +96,7 @@ def test_prepare_retains_first_failure_when_all_retries_fail(
     monkeypatch.setattr(engine, "compile_source_file", compile_source)
     monkeypatch.setattr(engine, "apply_rules", apply)
 
-    batch = engine.prepare_migrations(
-        (_request(path, "0.3.0", attempts),), _config(tmp_path)
-    )
+    batch = engine.prepare_migrations((_request(path, "0.3.0", attempts),), _config(tmp_path))
 
     assert seen == {
         "compile": ["0.3.0", "0.3.1", "0.3.2"],
@@ -204,9 +190,7 @@ def test_candidate_override_and_revalidation_reset_only_engine_diagnostics(
     monkeypatch.setattr(
         engine,
         "apply_rules",
-        lambda source, config, path: RewriteResult(
-            source + "# rewritten\n", [], [rule_diagnostic]
-        ),
+        lambda source, config, path: RewriteResult(source + "# rewritten\n", [], [rule_diagnostic]),
     )
 
     def compile_target(path, source, config, overlay):
@@ -271,9 +255,7 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
         return RewriteResult(source, [], [], generated)
 
     @contextmanager
-    def overlay(
-        sources, target_version, search_paths, *, include_dependencies=False
-    ):
+    def overlay(sources, target_version, search_paths, *, include_dependencies=False):
         assert include_dependencies is False
         overlay_sources.update(sources)
         yield overlay_token
@@ -296,9 +278,7 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
     assert decision.status == "passed"
 
 
-def test_validation_rejects_duplicate_resolved_destinations(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_validation_rejects_duplicate_resolved_destinations(monkeypatch, tmp_path: Path) -> None:
     first = tmp_path / "First.vy"
     second = tmp_path / "Second.vy"
     interface = tmp_path / "Shared.vyi"
@@ -319,17 +299,13 @@ def test_validation_rejects_duplicate_resolved_destinations(
         return RewriteResult(source, [], [], [generated])
 
     monkeypatch.setattr(engine, "apply_rules", apply)
-    batch = engine.prepare_migrations(
-        (_request(first), _request(second)), _config(tmp_path)
-    )
+    batch = engine.prepare_migrations((_request(first), _request(second)), _config(tmp_path))
 
     with pytest.raises(engine.CandidatePathConflictError, match=r"Shared\.vyi"):
         engine.validate_migrations(batch, _config(tmp_path))
 
 
-def test_malformed_target_artifacts_remain_unwaivable(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_malformed_target_artifacts_remain_unwaivable(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "Contract.vy"
     monkeypatch.setattr(
         engine,
@@ -403,9 +379,7 @@ def test_interface_validation_is_target_only(
         "0.3.10",
         (SourceCompileAttempt("0.3.10", "0.3.10"),),
     )
-    monkeypatch.setattr(
-        engine, "compile_source_file", lambda *_args: CompileResult("skipped")
-    )
+    monkeypatch.setattr(engine, "compile_source_file", lambda *_args: CompileResult("skipped"))
     monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
     monkeypatch.setattr(engine, "compile_target_source", lambda *_args: target)
     config = _config(tmp_path)
@@ -445,17 +419,13 @@ def test_prepare_migrations_skips_interface_split_for_dependencies(
 
     monkeypatch.setattr(engine, "split_interfaces_to_vyi", unexpected_split)
 
-    batch = engine.prepare_migrations(
-        (request,), _config(tmp_path, split_interfaces=True)
-    )
+    batch = engine.prepare_migrations((request,), _config(tmp_path, split_interfaces=True))
 
     assert batch.files[0].report.role == "dependency"
     assert batch.generated == []
 
 
-def test_validate_migrations_threads_closure_mode(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project = project_root / "main.vy"
     search_path = tmp_path / "site-packages"
@@ -501,8 +471,8 @@ def test_validate_migrations_threads_closure_mode(
 
     def compile_target(path, source, config, overlay):
         assert overlay is not None
-        observed_search_paths[config.include_dependencies] = (
-            compiler._overlay_search_paths(overlay, config.compiler_search_paths)
+        observed_search_paths[config.include_dependencies] = compiler._overlay_search_paths(
+            overlay, config.compiler_search_paths
         )
         if path == dependency:
             target = overlay.paths[dependency.resolve()]
@@ -536,9 +506,7 @@ def test_validate_migrations_threads_closure_mode(
         compiler_search_paths=(search_path,),
     )
 
-    closure_batch = engine.prepare_migrations(
-        (project_request, dependency_request), closure_config
-    )
+    closure_batch = engine.prepare_migrations((project_request, dependency_request), closure_config)
     default_batch = engine.prepare_migrations((project_request,), default_config)
     engine.validate_migrations(closure_batch, closure_config)
     engine.validate_migrations(default_batch, default_config)

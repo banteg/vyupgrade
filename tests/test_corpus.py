@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from vyupgrade.compiler import CompileResult
+
 
 def _load_corpus_module():
     script = Path(__file__).parents[1] / "scripts" / "corpus.py"
@@ -671,10 +673,7 @@ def test_smoke_resumes_when_selected_compiler_differs_from_manifest_hint(
     monkeypatch, tmp_path: Path
 ) -> None:
     corpus = _load_corpus_module()
-    items = [
-        {"index": index, "repo": "test", "source_compiler": "0.3.3"}
-        for index in range(2)
-    ]
+    items = [{"index": index, "repo": "test", "source_compiler": "0.3.3"} for index in range(2)]
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
     output_path = tmp_path / "smoke-results.json"
@@ -733,11 +732,7 @@ def test_smoke_does_not_resume_older_schema_result_rows(
     legacy_results = [
         {
             **items[0],
-            **(
-                {"smoke_schema_version": old_schema}
-                if old_schema is not None
-                else {}
-            ),
+            **({"smoke_schema_version": old_schema} if old_schema is not None else {}),
             "source_compile": "passed",
             "target_compile": "passed",
             "target_version": target_version,
@@ -771,8 +766,7 @@ def test_smoke_does_not_resume_older_schema_result_rows(
     assert sorted(submitted) == [0, 1]
     results = json.loads(output_path.read_text(encoding="utf-8"))
     assert all(
-        result["smoke_schema_version"] == corpus.SMOKE_RESULT_SCHEMA_VERSION
-        for result in results
+        result["smoke_schema_version"] == corpus.SMOKE_RESULT_SCHEMA_VERSION for result in results
     )
 
 
@@ -816,9 +810,7 @@ def test_smoke_does_not_resume_when_run_identity_changes(monkeypatch, tmp_path: 
     assert {result["target_version"] for result in results} == {"0.4.3"}
 
 
-def test_smoke_does_not_resume_when_runner_source_changes(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_smoke_does_not_resume_when_runner_source_changes(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     items = [{"index": index, "repo": "test"} for index in range(2)]
     manifest_path = tmp_path / "manifest.json"
@@ -856,9 +848,7 @@ def test_smoke_does_not_resume_when_runner_source_changes(
     corpus.smoke_corpus(manifest_path, output_path, target_version, 2, 0)
 
     assert sorted(submitted) == [0, 1]
-    checkpoint = json.loads(
-        corpus._checkpoint_path(output_path).read_text(encoding="utf-8")
-    )
+    checkpoint = json.loads(corpus._checkpoint_path(output_path).read_text(encoding="utf-8"))
     assert checkpoint["identity"]["runner_sha256"] == "new-runner"
 
 
@@ -947,9 +937,10 @@ def test_smoke_malformed_resume_state_falls_back_safely(
 
     assert submitted == [0]
     assert json.loads(output_path.read_text(encoding="utf-8"))[0]["index"] == 0
-    assert json.loads(corpus._checkpoint_path(output_path).read_text(encoding="utf-8"))[
-        "completed"
-    ] == 1
+    assert (
+        json.loads(corpus._checkpoint_path(output_path).read_text(encoding="utf-8"))["completed"]
+        == 1
+    )
 
 
 def test_atomic_json_write_keeps_existing_destination_valid_on_replace_failure(
@@ -1016,14 +1007,14 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
     def fake_compile_source_file(path, config, source_version):
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
     monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1034,9 +1025,7 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
     assert result["source_compile"] == "passed"
     assert result["target_compile"] == "passed"
     assert result["validation_status"] == "blocked"
-    assert result["validation_blockers"][0]["code"] == (
-        "target_artifacts_unavailable"
-    )
+    assert result["validation_blockers"][0]["code"] == ("target_artifacts_unavailable")
     assert result["validation_waivers"] == []
 
 
@@ -1055,14 +1044,14 @@ def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_pat
     monkeypatch.setattr(
         corpus.engine,
         "compile_source_file",
-        lambda path, config, source_version: SimpleNamespace(
+        lambda path, config, source_version: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1088,13 +1077,9 @@ def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_pat
 
     result = corpus._smoke_one(item, "0.4.3")
 
-    assert result["abi_diff"] == [
-        "changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"
-    ]
+    assert result["abi_diff"] == ["changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"]
     assert "method_id_diff" not in result
-    assert result["storage_layout_diff"] == [
-        "changed storage: x slot 0 uint256 -> 1 uint256"
-    ]
+    assert result["storage_layout_diff"] == ["changed storage: x slot 0 uint256 -> 1 uint256"]
 
 
 def test_smoke_tries_lowest_broad_pragma_compiler_before_syntax_hint(
@@ -1122,15 +1107,15 @@ def test_smoke_tries_lowest_broad_pragma_compiler_before_syntax_hint(
     def fake_compile_source_file(path, config, source_version):
         seen["compile_versions"].append(source_version)
         if source_version == "0.3.0":
-            return SimpleNamespace(status="failed", artifacts=None, stderr="syntax unavailable")
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+            return CompileResult(status="failed", artifacts=None, stderr="syntax unavailable")
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
     monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1197,7 +1182,7 @@ def multiplyHoldings() -> bool:
     def fake_compile_source_file(path, config, source_version):
         seen["compile_versions"].append(source_version)
         status = "passed" if source_version == "0.3.3" else "failed"
-        return SimpleNamespace(status=status, artifacts={}, stderr=None)
+        return CompileResult(status=status, artifacts={}, stderr=None)
 
     def fake_apply_rules(source, config, path):
         seen["rewrite_version"] = config.source_version
@@ -1208,7 +1193,7 @@ def multiplyHoldings() -> bool:
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1243,7 +1228,7 @@ def test_smoke_reports_winning_source_compiler_instead_of_manifest_hint(
     def fake_compile_source_file(path, config, source_version):
         seen["compile_versions"].append(source_version)
         status = "passed" if source_version == "0.3.4" else "failed"
-        return SimpleNamespace(status=status, artifacts={}, stderr=None)
+        return CompileResult(status=status, artifacts={}, stderr=None)
 
     def fake_apply_rules(source, config, path):
         seen["rewrite_version"] = config.source_version
@@ -1254,7 +1239,7 @@ def test_smoke_reports_winning_source_compiler_instead_of_manifest_hint(
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1286,16 +1271,14 @@ def test_smoke_preserves_source_provenance_when_target_validation_raises(
     monkeypatch.setattr(
         corpus.engine,
         "compile_source_file",
-        lambda path, config, source_version: SimpleNamespace(
+        lambda path, config, source_version: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(
-            source=source, fixes=[], diagnostics=[]
-        ),
+        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
 
     def fail_target_validation(batch, config):
@@ -1336,20 +1319,18 @@ def test_smoke_uses_valid_manifest_compiler_when_pragma_is_unusable(
 
     def fake_compile_source_file(path, config, source_version):
         compiled.append(source_version)
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(
-            source=source, fixes=[], diagnostics=[]
-        ),
+        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1383,20 +1364,16 @@ def test_smoke_fails_closed_without_usable_source_version(
     def unexpected_source_compile(path, config, source_version):
         pytest.fail(f"unexpected source compiler: {source_version}")
 
-    monkeypatch.setattr(
-        corpus.engine, "compile_source_file", unexpected_source_compile
-    )
+    monkeypatch.setattr(corpus.engine, "compile_source_file", unexpected_source_compile)
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(
-            source=source, fixes=[], diagnostics=[]
-        ),
+        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1407,14 +1384,10 @@ def test_smoke_fails_closed_without_usable_source_version(
     assert result["source_compiler"] is None
     assert result["source_compile"] == "skipped"
     assert result["validation_status"] == "blocked"
-    assert {issue["code"] for issue in result["validation_blockers"]} >= {
-        "source_compile_failed"
-    }
+    assert {issue["code"] for issue in result["validation_blockers"]} >= {"source_compile_failed"}
 
 
-def test_smoke_retries_broad_pragma_with_newer_source_compiler(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_smoke_retries_broad_pragma_with_newer_source_compiler(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
     contract.parent.mkdir(parents=True)
@@ -1430,8 +1403,8 @@ def test_smoke_retries_broad_pragma_with_newer_source_compiler(
     def fake_compile_source_file(path, config, source_version):
         seen["compile_versions"].append(source_version)
         if source_version == "0.3.0":
-            return SimpleNamespace(status="failed", artifacts=None, stderr="old compiler failed")
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+            return CompileResult(status="failed", artifacts=None, stderr="old compiler failed")
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     def fake_apply_rules(source, config, path):
         seen["rewrite_version"] = config.source_version
@@ -1442,7 +1415,7 @@ def test_smoke_retries_broad_pragma_with_newer_source_compiler(
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1475,14 +1448,14 @@ def test_smoke_uses_standard_json_compiler_version_for_source(monkeypatch, tmp_p
 
     def fake_compile_source_file(path, config, source_version):
         seen["compile_version"] = source_version
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
     monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )
@@ -1528,14 +1501,14 @@ def test_smoke_uses_standard_json_search_paths(monkeypatch, tmp_path: Path) -> N
 
     def fake_compile_source_file(path, config, source_version):
         seen["source_paths"] = config.compiler_search_paths
-        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+        return CompileResult(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
     monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
     monkeypatch.setattr(
         corpus.engine,
         "compile_target_source",
-        lambda path, source, config, overlay: SimpleNamespace(
+        lambda path, source, config, overlay: CompileResult(
             status="passed", artifacts={}, stderr=None
         ),
     )

@@ -7,23 +7,18 @@ DEFAULT_INCLUDE = {".vy", ".vyi"}
 DEFAULT_EXCLUDES = {".git", ".venv", "venv", "build", "dist", "__pycache__"}
 
 
-def discover_files(
-    paths: tuple[Path, ...], *, excluded_roots: tuple[Path, ...] = ()
-) -> list[Path]:
+def discover_files(paths: tuple[Path, ...], *, excluded_roots: tuple[Path, ...] = ()) -> list[Path]:
     files: list[Path] = []
     excluded = tuple(
         dict.fromkeys(
-            candidate
-            for root in excluded_roots
-            for candidate in (root.absolute(), root.resolve())
+            candidate for root in excluded_roots for candidate in (root.absolute(), root.resolve())
         )
     )
 
     def is_excluded(path: Path) -> bool:
         absolute, resolved = path.absolute(), path.resolve()
         return any(
-            absolute.is_relative_to(root) or resolved.is_relative_to(root)
-            for root in excluded
+            absolute.is_relative_to(root) or resolved.is_relative_to(root) for root in excluded
         )
 
     for path in paths:
@@ -45,4 +40,3 @@ def discover_files(
                 files.append(child)
 
     return sorted(dict.fromkeys(file.resolve() for file in files))
-

@@ -23,7 +23,6 @@ from vyupgrade.engine import MigrationRequest, SourceCompileAttempt
 from vyupgrade.models import Config, FileReport
 from vyupgrade.versions import (
     KNOWN_VERSIONS,
-    compiler_version_for_source,
     compiler_version_for_spec,
     infer_pragma,
     is_supported_source_version,
@@ -881,7 +880,8 @@ def _import_vyper_2026_inventory_standard_json(
                 "pragma": source_spec,
                 "source_pragma": infer_pragma(source_text),
                 "source_compiler": compiler_version_for_spec(source_spec),
-                "compiler_version": payload.get("compiler_version") or metadata.get("compiler_version"),
+                "compiler_version": payload.get("compiler_version")
+                or metadata.get("compiler_version"),
                 "sha256": _source_hash(source_text),
                 "compiler_search_paths": [str(path) for path in compiler_search_paths],
                 "standard_json": str(source_path),
@@ -1411,12 +1411,8 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             "method_ids_equal": report.method_ids_equal,
             "storage_layout_equal": report.storage_layout_equal,
             "validation_status": validation.status,
-            "validation_blockers": [
-                issue.to_json_obj() for issue in validation.blockers
-            ],
-            "validation_waivers": [
-                issue.to_json_obj() for issue in validation.waivers
-            ],
+            "validation_blockers": [issue.to_json_obj() for issue in validation.blockers],
+            "validation_waivers": [issue.to_json_obj() for issue in validation.waivers],
             **artifact_details,
             "seconds": round(time.time() - started, 3),
         }
@@ -1473,13 +1469,9 @@ def _smoke_summary(
         for code in _validation_issue_codes(item.get("validation_blockers"))
     )
     validation_waivers = Counter(
-        code
-        for item in results
-        for code in _validation_issue_codes(item.get("validation_waivers"))
+        code for item in results for code in _validation_issue_codes(item.get("validation_waivers"))
     )
-    failed_repos = Counter(
-        item["repo"] for item in results if _is_smoke_safety_failure(item)
-    )
+    failed_repos = Counter(item["repo"] for item in results if _is_smoke_safety_failure(item))
     source_errors = Counter(
         item.get("source_error")
         for item in results
@@ -1553,9 +1545,7 @@ def _validation_issue_codes(value: object) -> list[str]:
     return [
         code
         for issue in value
-        if isinstance(issue, dict)
-        and isinstance((code := issue.get("code")), str)
-        and code
+        if isinstance(issue, dict) and isinstance((code := issue.get("code")), str) and code
     ]
 
 
@@ -1654,8 +1644,7 @@ def _load_smoke_checkpoint(
 
 def _result_matches_item(result: dict[str, Any], item: dict[str, Any]) -> bool:
     return all(
-        (result_key := "source_compiler_hint" if key == "source_compiler" else key)
-        in result
+        (result_key := "source_compiler_hint" if key == "source_compiler" else key) in result
         and result[result_key] == value
         for key, value in item.items()
     )
@@ -1667,8 +1656,7 @@ def _write_smoke_checkpoint(
     identity: dict[str, Any],
 ) -> None:
     versioned_results = [
-        {**result, "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION}
-        for result in results
+        {**result, "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION} for result in results
     ]
     _atomic_write_json(output_path, versioned_results)
     _atomic_write_json(
@@ -1698,9 +1686,7 @@ def _atomic_write_json(path: Path, value: Any) -> None:
         destination_mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
         destination_mode = None
-    temporary_path = path.with_name(
-        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     descriptor = os.open(
         temporary_path,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -1914,7 +1900,7 @@ def _item_source_version(item: dict[str, Any]) -> str | None:
         source = ""
     pragma = _item_source_spec(item, source)
     if pragma is not None:
-        return compiler_version_for_source(pragma, source)
+        return compiler_version_for_spec(pragma)
     return _normalized_source_compiler(item.get("source_compiler"))
 
 
@@ -1977,12 +1963,15 @@ def _normalized_source_compiler(value: object) -> str | None:
 
 
 def _has_exact_source_compiler(item: dict[str, Any]) -> bool:
-    return bool(item.get("standard_json")) and _normalized_source_compiler(
-        item.get("compiler_version")
-    ) is not None
+    return (
+        bool(item.get("standard_json"))
+        and _normalized_source_compiler(item.get("compiler_version")) is not None
+    )
 
 
-def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:
+def _standard_json_compiler_search_paths(
+    payload: dict[str, Any], package_root: Path
+) -> tuple[Path, ...]:
     settings = payload.get("settings")
     if not isinstance(settings, dict):
         return ()

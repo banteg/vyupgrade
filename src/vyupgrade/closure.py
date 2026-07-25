@@ -46,9 +46,7 @@ def write_closure_output(
                 (),
                 "refusing to write the closure into a directory that contains migration sources",
             )
-        relative_files = _closure_relative_files(
-            sources, target_version, search_paths
-        )
+        relative_files = _closure_relative_files(sources, target_version, search_paths)
         linked = _linked_output_path(resolved, relative_files)
         if linked is not None:
             return ClosureWriteResult(
@@ -66,9 +64,7 @@ def write_closure_output(
             include_dependencies=True,
         )
         assert overlay is not None
-        return ClosureWriteResult(
-            "written", resolved, tuple(sorted(set(overlay.paths.values())))
-        )
+        return ClosureWriteResult("written", resolved, tuple(sorted(set(overlay.paths.values()))))
     except (compiler.OverlayLayoutConflictError, OSError) as exc:
         return ClosureWriteResult("failed", resolved, (), str(exc))
 
@@ -89,9 +85,7 @@ def write_closure_archive(
                 (),
                 f"archive entry is missing from closure sources: {entry}",
             )
-        members = compiler.resolve_import_closure(
-            sources, config.compiler_search_paths
-        ).files
+        members = compiler.resolve_import_closure(sources, config.compiler_search_paths).files
         if resolved in members:
             return ClosureWriteResult(
                 "failed",
@@ -131,11 +125,7 @@ def _closure_relative_files(
             include_dependencies=True,
         )
         assert overlay is not None
-        return tuple(
-            path.relative_to(root)
-            for path in root.rglob("*")
-            if path.is_file()
-        )
+        return tuple(path.relative_to(root) for path in root.rglob("*") if path.is_file())
 
 
 def _linked_output_path(root: Path, relative_files: tuple[Path, ...]) -> Path | None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
+from hashlib import sha256
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,8 @@ from vyupgrade.compiler import (
     CompileResult,
     OverlayLayoutConflictError,
     TargetOverlay,
+    _CompilerProcess,
+    _declared_project_environment,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
@@ -27,11 +29,33 @@ from vyupgrade.compiler import (
     target_overlay,
     unavailable_validation_artifacts,
 )
-from vyupgrade.models import Config
+from vyupgrade.models import Config, ContentIdentity, DependencyContext, FailureOrigin
 from vyupgrade.versions import KNOWN_VERSIONS, parse_version
 
 
 TARGET_COMPILER_OUTPUT = '[]\n{}\n{}\n{"ast_type":"Module","body":[]}\n'
+
+
+def _compiler_process(
+    command: list[str],
+    *,
+    returncode: int | None = 0,
+    stdout: str = TARGET_COMPILER_OUTPUT,
+    stderr: str = "",
+    failure_origin: FailureOrigin | None = None,
+    error: str | None = None,
+) -> _CompilerProcess:
+    return _CompilerProcess(
+        command=command,
+        context=DependencyContext(mode="isolated"),
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        resolved_compiler="0.4.3",
+        compiler_started=True,
+        failure_origin=failure_origin or ("compiler" if returncode else None),
+        error=error,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -129,15 +153,19 @@ def test_explicit_compiler_path_skips_uv_wrapper() -> None:
 def test_target_compile_fails_on_unsupported_required_layout(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(
-            command, 1, "", "ValueError: Unsupported format type 'layout'"
+        return _compiler_process(
+            command,
+            returncode=1,
+            stderr="ValueError: Unsupported format type 'layout'",
         )
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
-    result = _run_compile(["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),)))
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
 
     assert result.status == "failed"
     assert result.unavailable_formats == ("layout",)
@@ -159,14 +187,14 @@ def test_target_compile_falls_back_when_optional_ast_is_unavailable(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
         requested = command[command.index("-f") + 1]
         if requested.endswith(",ast"):
-            return subprocess.CompletedProcess(command, 1, "", ast_error)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+            return _compiler_process(command, returncode=1, stderr=ast_error)
+        return _compiler_process(command, stdout="[]\n{}\n{}\n")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile(
         ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
@@ -194,13 +222,13 @@ def test_target_compile_does_not_drop_required_formats_after_ast_fallback(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
         requested = command[command.index("-f") + 1]
         error = "KeyError: 'ast'" if requested.endswith(",ast") else required_error
-        return subprocess.CompletedProcess(command, 1, "", error)
+        return _compiler_process(command, returncode=1, stderr=error)
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile(
         ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
@@ -243,9 +271,7 @@ def test_target_compile_does_not_drop_required_formats_after_ast_fallback(
         ),
     ],
 )
-def test_validation_artifacts_reject_malformed_nested_schemas(
-    artifacts, unavailable
-) -> None:
+def test_validation_artifacts_reject_malformed_nested_schemas(artifacts, unavailable) -> None:
     from vyupgrade.compiler import unavailable_validation_artifacts
 
     result = CompileResult("passed", artifacts=artifacts)
@@ -256,15 +282,17 @@ def test_validation_artifacts_reject_malformed_nested_schemas(
 def test_source_compile_degrades_on_unsupported_legacy_layout(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
         if command[command.index("-f") + 1] == "abi,method_identifiers,layout":
-            return subprocess.CompletedProcess(
-                command, 1, "", "ValueError: Unsupported format type 'layout'"
+            return _compiler_process(
+                command,
+                returncode=1,
+                stderr="ValueError: Unsupported format type 'layout'",
             )
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n", "")
+        return _compiler_process(command, stdout="[]\n{}\n")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile_with_formats_for_test(
         ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "layout")
@@ -279,18 +307,20 @@ def test_source_compile_degrades_on_unsupported_legacy_layout(monkeypatch) -> No
 def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
         requested = command[command.index("-f") + 1]
         if "method_identifiers" in requested:
-            return subprocess.CompletedProcess(command, 1, "", "KeyError: 'method_identifiers'")
+            return _compiler_process(command, returncode=1, stderr="KeyError: 'method_identifiers'")
         if "ast" in requested:
-            return subprocess.CompletedProcess(command, 1, "", "KeyError: 'ast'")
-        return subprocess.CompletedProcess(command, 0, "[]\n", "")
+            return _compiler_process(command, returncode=1, stderr="KeyError: 'ast'")
+        return _compiler_process(command, stdout="[]\n")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
-    result = _run_compile_with_formats_for_test(["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "ast"))
+    result = _run_compile_with_formats_for_test(
+        ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "ast")
+    )
 
     assert result.status == "degraded"
     assert result.unavailable_formats == ("method_identifiers", "ast")
@@ -300,7 +330,7 @@ def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
 def test_compile_retries_without_ast_for_legacy_span_error(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
         requested = command[command.index("-f") + 1]
         if requested in {
@@ -308,15 +338,14 @@ def test_compile_retries_without_ast_for_legacy_span_error(monkeypatch) -> None:
             "abi,method_identifiers,layout",
             "abi,method_identifiers",
         }:
-            return subprocess.CompletedProcess(
+            return _compiler_process(
                 command,
-                1,
-                "",
-                "ValueError: start (57,7) precedes previous end (58,0)",
+                returncode=1,
+                stderr="ValueError: start (57,7) precedes previous end (58,0)",
             )
-        return subprocess.CompletedProcess(command, 0, "[]\n", "")
+        return _compiler_process(command, stdout="[]\n")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile_with_formats_for_test(
         ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "layout", "ast")
@@ -328,7 +357,9 @@ def test_compile_retries_without_ast_for_legacy_span_error(monkeypatch) -> None:
     assert calls[-1][calls[-1].index("-f") + 1] == "abi"
 
 
-def _run_compile_with_formats_for_test(command: list[str], path: Path, formats: tuple[str, ...]) -> CompileResult:
+def _run_compile_with_formats_for_test(
+    command: list[str], path: Path, formats: tuple[str, ...]
+) -> CompileResult:
     from vyupgrade.compiler import _run_compile_with_formats
 
     return _run_compile_with_formats(
@@ -343,65 +374,169 @@ def _run_compile_with_formats_for_test(command: list[str], path: Path, formats: 
 
 
 def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) -> None:
-    def fake_run(command, **kwargs):
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n", "")
+    def fake_run(command, *_args, **_kwargs):
+        return _compiler_process(command, stdout="[]\n{}\n")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile(
         ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
     )
 
     assert result.status == "failed"
-    assert result.stderr == "could not parse compiler output: expected 4 compiler outputs, received 2"
+    assert (
+        result.stderr == "could not parse compiler output: expected 4 compiler outputs, received 2"
+    )
 
 
-def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
+def test_declared_project_environment_uses_full_project_and_project_compiler(tmp_path) -> None:
     project = tmp_path / "project"
-    contracts = project / "contracts"
-    contracts.mkdir(parents=True)
-    contract = contracts / "AMM.vy"
-    contract.write_text(
-        """#pragma version 0.4.3
-from snekmate.utils import math
+    contract = project / "contracts" / "AMM.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        """[project]
+name = "amm"
+version = "0.1.0"
+dependencies = ["vyper==0.4.1", "snekmate==0.1.1", "requests==2.32.4"]
 """,
         encoding="utf-8",
     )
-    (project / "pyproject.toml").write_text(
-        """[tool.poetry.dependencies]
-python = ">=3.11,<4"
-snekmate = "0.1.2"
-""",
-        encoding="utf-8",
-    )
-    calls: list[list[str]] = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
-
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
-
-    result = _run_compile(
-        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
-        contract,
-        Config(paths=(contract,)),
-    )
-
-    assert result.status == "passed"
-    assert calls[0][:9] == [
-        "/tmp/uv",
+    command = [
+        _uv_bin(),
         "run",
         "--no-project",
         "--python",
         "3.11",
         "--with",
-        "vyper==0.4.3",
-        "--with",
-        "snekmate==0.1.2",
+        "vyper==0.4.1",
+        "vyper",
     ]
-    assert calls[0][9] == "vyper"
-    assert ["-p", str(project)] == calls[0][calls[0].index("-p") : calls[0].index("-p") + 2]
+
+    with _declared_project_environment(command, contract, project_compiler=True) as (
+        prepared,
+        context,
+    ):
+        environment_root = Path(prepared[prepared.index("--project") + 1])
+
+        assert prepared[:3] == [_uv_bin(), "run", "--isolated"]
+        assert environment_root != project.resolve()
+        assert (environment_root / "pyproject.toml").is_file()
+        assert "--all-extras" in prepared
+        assert "--all-groups" in prepared
+        assert "--no-project" not in prepared
+        assert "--python" not in prepared
+        assert not any(argument.startswith("vyper==") for argument in prepared)
+        assert prepared[-1] == "vyper"
+        assert context == DependencyContext(
+            mode="project",
+            project_root=str(project.resolve()),
+            manifest=ContentIdentity(
+                str(pyproject.resolve()),
+                sha256(pyproject.read_bytes()).hexdigest(),
+            ),
+        )
+
+
+def test_declared_project_environment_uses_existing_lock_without_mutating_project(
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "contract.vy"
+    project.mkdir()
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        """[project]
+name = "locked"
+version = "0.1.0"
+dependencies = ["vyper==0.4.1"]
+""",
+        encoding="utf-8",
+    )
+    lockfile = project / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+
+    with _declared_project_environment(
+        [_uv_bin(), "run", "--no-project", "--with", "vyper==0.4.1", "vyper"],
+        contract,
+        project_compiler=True,
+    ) as (prepared, context):
+        assert prepared[prepared.index("--project") + 1] == str(project.resolve())
+        assert "--frozen" in prepared
+        assert context == DependencyContext(
+            mode="project",
+            project_root=str(project.resolve()),
+            manifest=ContentIdentity(
+                str(pyproject.resolve()),
+                sha256(pyproject.read_bytes()).hexdigest(),
+            ),
+            lockfile=ContentIdentity(
+                str(lockfile.resolve()),
+                sha256(lockfile.read_bytes()).hexdigest(),
+            ),
+        )
+
+
+def test_declared_project_environment_uses_project_interpreter_for_compiler_overlay(
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "contract.vy"
+    project.mkdir()
+    contract.write_text("#pragma version 0.3.10\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "compiler-overlay"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["requests==2.32.4"]
+""",
+        encoding="utf-8",
+    )
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.3.10",
+        "vyper",
+    ]
+
+    with _declared_project_environment(command, contract, project_compiler=True) as (
+        prepared,
+        _context,
+    ):
+        assert "--python" not in prepared
+        assert prepared[prepared.index("--with") : prepared.index("--with") + 2] == [
+            "--with",
+            "vyper==0.3.10",
+        ]
+
+
+def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.4.1",
+        "vyper",
+    ]
+
+    with _declared_project_environment(command, contract, project_compiler=True) as (
+        prepared,
+        context,
+    ):
+        assert prepared == command
+        assert context == DependencyContext(mode="isolated")
 
 
 def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_path) -> None:
@@ -409,11 +544,11 @@ def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_p
     contract.write_text("", encoding="utf-8")
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
+        return _compiler_process(command)
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile(
         ["/tmp/uv", "run", "--no-project", "--python", "3.8", "--with", "vyper==0.1.0b4", "vyper"],
@@ -426,56 +561,14 @@ def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_p
     assert "-p" not in calls[0]
 
 
-def test_compile_inserts_import_dependencies_before_legacy_runner(monkeypatch, tmp_path) -> None:
-    contract = tmp_path / "contracts" / "contract.vy"
-    contract.parent.mkdir(parents=True)
-    contract.write_text("from snekmate.utils import math\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(
-        """[tool.poetry.dependencies]
-python = ">=3.11,<4"
-snekmate = "0.1.2"
-""",
-        encoding="utf-8",
-    )
-    calls: list[list[str]] = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
-
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
-
-    result = _run_compile(
-        [
-            "/tmp/uv",
-            "run",
-            "--no-project",
-            "--python",
-            "3.8",
-            "--with",
-            "vyper==0.1.0b4",
-            "--with",
-            "typed-ast",
-            "python",
-            "/tmp/legacy_vyper.py",
-        ],
-        contract,
-        Config(paths=(contract,)),
-    )
-
-    assert result.status == "passed"
-    assert calls[0][9:11] == ["--with", "snekmate==0.1.2"]
-    assert calls[0][11:13] == ["python", "/tmp/legacy_vyper.py"]
-
-
 def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command, **kwargs):
+    def fake_run(command, *_args, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
+        return _compiler_process(command)
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = _run_compile(
         ["vyper"],
@@ -488,79 +581,26 @@ def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
     assert calls[0][calls[0].index("-W") + 1] == "none"
 
 
-def test_compile_reports_timeout_as_failure(monkeypatch) -> None:
-    def fake_run(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+def test_compile_preserves_typed_timeout_failure(monkeypatch) -> None:
+    def fake_run(command, *_args, **_kwargs):
+        return _compiler_process(
+            command,
+            returncode=None,
+            stdout="",
+            failure_origin="timeout",
+            error="compiler timed out after 120 seconds",
+        )
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
-    result = _run_compile(["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),)))
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
 
     assert result.status == "failed"
     assert result.stderr == "compiler timed out after 120 seconds"
-    assert result.command is not None
-
-
-def test_compile_retries_missing_pyproject_import_dependency(monkeypatch, tmp_path) -> None:
-    contract = tmp_path / "contracts" / "utils" / "contract.vy"
-    contract.parent.mkdir(parents=True)
-    contract.write_text("# @version 0.4.3\nfrom snekmate.utils import math\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(
-        """
-[tool.poetry.dependencies]
-python = ">=3.11,<4"
-snekmate = "0.1.2"
-curve-std = {git = "https://github.com/curvefi/curve-std.git", rev = "09ad21756cd573cd6ac7afb32fb299fef32429cc"}
-""",
-        encoding="utf-8",
-    )
-    calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        if len(calls) == 1:
-            return subprocess.CompletedProcess(
-                command,
-                1,
-                stdout="",
-                stderr="vyper.exceptions.ModuleNotFound: curve_std.stableswap.lp_oracle_2",
-            )
-        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
-
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
-
-    result = _run_compile(
-        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
-        contract,
-        Config(paths=(contract,)),
-    )
-
-    assert result.status == "passed"
-    assert len(calls) == 2
-    assert "snekmate==0.1.2" in calls[0]
-    assert "curve-std @ git+https://github.com/curvefi/curve-std.git@09ad21756cd573cd6ac7afb32fb299fef32429cc" in calls[1]
-
-
-def test_compile_installs_common_import_dependency_without_pyproject(monkeypatch, tmp_path) -> None:
-    contract = tmp_path / "contracts" / "contract.vy"
-    contract.parent.mkdir(parents=True)
-    contract.write_text("# @version 0.4.3\nfrom snekmate.tokens import erc721\n", encoding="utf-8")
-    calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
-
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
-
-    result = _run_compile(
-        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
-        contract,
-        Config(paths=(contract,)),
-    )
-
-    assert result.status == "passed"
-    assert "snekmate" in calls[0]
+    assert result.failure_origin == "timeout"
+    assert result.compiler_started is True
 
 
 def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
@@ -568,7 +608,9 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")
     calls: dict[str, object] = {}
 
-    def fake_compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
+    def fake_compiler_command(
+        explicit: str | None, version: str | None, python: str | None
+    ) -> list[str]:
         calls["compiler"] = (explicit, version, python)
         return ["vyper"]
 
@@ -585,7 +627,9 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
         return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
 
     monkeypatch.setattr("vyupgrade.compiler._compiler_command", fake_compiler_command)
-    monkeypatch.setattr("vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats)
+    monkeypatch.setattr(
+        "vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats
+    )
 
     result = compile_source_ast(contract, Config(paths=(contract,)), None)
 
@@ -599,7 +643,9 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")
     calls: dict[str, object] = {}
 
-    def fake_compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
+    def fake_compiler_command(
+        explicit: str | None, version: str | None, python: str | None
+    ) -> list[str]:
         calls["compiler"] = (explicit, version, python)
         return ["vyper"]
 
@@ -616,22 +662,30 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
         return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
 
     monkeypatch.setattr("vyupgrade.compiler._compiler_command", fake_compiler_command)
-    monkeypatch.setattr("vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats)
+    monkeypatch.setattr(
+        "vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats
+    )
 
     result = compile_source_file(contract, Config(paths=(contract,)), None)
 
     assert result.status == "passed"
     assert calls["compiler"] == (None, "0.4.3", None)
-    assert calls["run"] == (["vyper"], contract, ("abi", "method_identifiers", "layout", "ast"), (), True)
+    assert calls["run"] == (
+        ["vyper"],
+        contract,
+        ("abi", "method_identifiers", "layout", "ast"),
+        (),
+        True,
+    )
 
 
-def test_compile_source_file_retries_legacy_span_error_with_final_newline(
+def test_compile_source_file_does_not_retry_or_transform_final_newline(
     monkeypatch, tmp_path
 ) -> None:
     contract = tmp_path / "contract.vy"
     source = "# @version 0.2.8\n# eof"
     contract.write_text(source, encoding="utf-8")
-    calls: list[tuple[Path, bytes]] = []
+    calls: list[tuple[Path, bytes, object]] = []
 
     def fake_run_compile_with_formats(
         command: list[str],
@@ -640,26 +694,20 @@ def test_compile_source_file_retries_legacy_span_error_with_final_newline(
         formats: tuple[str, ...],
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
-        **_kwargs,
+        **kwargs,
     ) -> CompileResult:
-        calls.append((path, path.read_bytes()))
-        if len(calls) == 1:
-            return CompileResult(
-                "failed", stderr="ValueError: start (2,0) precedes previous end (3,0)"
-            )
-        return CompileResult("passed", artifacts={"abi": []})
+        calls.append((path, path.read_bytes(), kwargs.get("allow_format_retries")))
+        return CompileResult("failed", stderr="ValueError: start (2,0) precedes previous end (3,0)")
 
     monkeypatch.setattr("vyupgrade.compiler._prepare_command", lambda *args: (["vyper"], False))
-    monkeypatch.setattr("vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats)
+    monkeypatch.setattr(
+        "vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats
+    )
 
     result = compile_source_file(contract, Config(paths=(contract,)), "0.2.8")
 
-    assert result.status == "passed"
-    assert calls[0] == (contract, source.encode())
-    assert calls[1][0].parent == contract.parent
-    assert calls[1][0] != contract
-    assert calls[1][1] == source.encode() + b"\n"
-    assert not calls[1][0].exists()
+    assert result.status == "failed"
+    assert calls == [(contract, source.encode(), False)]
     assert contract.read_text(encoding="utf-8") == source
 
 
@@ -668,7 +716,9 @@ def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tm
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
     calls: dict[str, object] = {}
 
-    def fake_compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
+    def fake_compiler_command(
+        explicit: str | None, version: str | None, python: str | None
+    ) -> list[str]:
         calls["compiler"] = (explicit, version, python)
         return ["vyper"]
 
@@ -678,6 +728,7 @@ def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tm
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["run"] = (command, config.enable_decimals, extra_paths, suppress_warnings)
         return CompileResult("passed", artifacts={})
@@ -709,6 +760,7 @@ def test_compile_target_source_enables_decimals_for_math_import(monkeypatch, tmp
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["enable_decimals"] = config.enable_decimals
         return CompileResult("passed", artifacts={})
@@ -738,6 +790,7 @@ def test_compile_target_source_compiles_exact_candidate_bytes(monkeypatch, tmp_p
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["source"] = path.read_text(encoding="utf-8")
         return CompileResult("passed", artifacts={})
@@ -768,11 +821,14 @@ def test_compile_target_interface_uses_import_harness(monkeypatch, tmp_path) -> 
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["harness"] = path.read_text(encoding="utf-8")
         module = calls["harness"].split("import ", 1)[1].split(" as ", 1)[0]
         calls["interface"] = (path.parent / f"{module}.vyi").read_text(encoding="utf-8")
-        return CompileResult("passed", artifacts={"abi": [], "method_identifiers": {}, "layout": {}})
+        return CompileResult(
+            "passed", artifacts={"abi": [], "method_identifiers": {}, "layout": {}}
+        )
 
     monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
 
@@ -878,6 +934,7 @@ def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch,
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["target_parent"] = path.parent
         return CompileResult("passed", artifacts={})
@@ -888,6 +945,7 @@ def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch,
 
     assert result.status == "passed"
     assert calls["target_parent"] == contract.parent
+
 
 def _write_import_closure_fixture(
     tmp_path: Path,
@@ -903,9 +961,7 @@ def _write_import_closure_fixture(
     source = "#pragma version 0.4.3\nfrom . import b\n"
     contract.write_text(source, encoding="utf-8")
     dependency.write_text(
-        "# @version 0.4.0\n"
-        "from .lib import c\n"
-        "from .interfaces import IThing\n",
+        "# @version 0.4.0\nfrom .lib import c\nfrom .interfaces import IThing\n",
         encoding="utf-8",
     )
     transitive.write_text("# @version 0.4.0\nVALUE: constant(uint256) = 1\n", encoding="utf-8")
@@ -932,11 +988,7 @@ def _write_external_import_fixture(
     external_dependency = site_packages / "depkg" / "util.vy"
     contract.parent.mkdir(parents=True)
     external_dependency.parent.mkdir(parents=True)
-    source = (
-        "#pragma version 0.4.3\n"
-        "from . import local\n"
-        "from depkg import util\n"
-    )
+    source = "#pragma version 0.4.3\nfrom . import local\nfrom depkg import util\n"
     contract.write_text(source, encoding="utf-8")
     local_dependency.write_text(
         "# @version 0.3.10\nLOCAL: constant(uint256) = 1\n",
@@ -964,10 +1016,7 @@ def _write_create2_collision_fixture(
     create2 = utils / "create2.vy"
     utils.mkdir(parents=True)
     (project / "pyproject.toml").write_text("[project]\nname='create2'\n")
-    contract_source = (
-        "#pragma version 0.4.3\n"
-        "from snekmate.utils import create2_address, create2\n"
-    )
+    contract_source = "#pragma version 0.4.3\nfrom snekmate.utils import create2_address, create2\n"
     create2_address_source = (
         "# @version 0.3.10\n"
         "def _compute_address(value: uint256) -> address:\n"
@@ -984,9 +1033,7 @@ def _write_create2_collision_fixture(
 
 
 def test_resolve_import_closure_lists_transitive_dependencies(tmp_path) -> None:
-    contract, sources, search_paths, expected_dependencies = (
-        _write_import_closure_fixture(tmp_path)
-    )
+    contract, sources, search_paths, expected_dependencies = _write_import_closure_fixture(tmp_path)
 
     closure = resolve_import_closure(sources, search_paths)
 
@@ -1023,22 +1070,16 @@ def test_resolve_import_closure_ignores_imports_in_strings(
 
 
 def test_resolve_import_closure_matches_overlay_dependency_copies(tmp_path) -> None:
-    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(
-        tmp_path
-    )
+    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(tmp_path)
     closure = resolve_import_closure(sources, search_paths)
 
     with target_overlay(sources, "0.4.3", search_paths) as overlay:
         assert overlay is not None
         copied_files = {
-            path.relative_to(overlay.root)
-            for path in overlay.root.rglob("*")
-            if path.is_file()
+            path.relative_to(overlay.root) for path in overlay.root.rglob("*") if path.is_file()
         }
 
-    override_files = {
-        path.resolve().relative_to(closure.common_root) for path in sources
-    }
+    override_files = {path.resolve().relative_to(closure.common_root) for path in sources}
     config_files = {
         path.relative_to(closure.common_root)
         for path in closure.common_root.rglob("pyproject.toml")
@@ -1046,8 +1087,7 @@ def test_resolve_import_closure_matches_overlay_dependency_copies(tmp_path) -> N
     create2_aliases = {
         path
         for path in copied_files
-        if path.name == "create2.vy"
-        and path.with_name("create2_address.vy") in copied_files
+        if path.name == "create2.vy" and path.with_name("create2_address.vy") in copied_files
     }
     dependency_copies = copied_files - override_files - config_files - create2_aliases
 
@@ -1065,11 +1105,7 @@ def test_resolve_import_closure_search_path_dependency(tmp_path) -> None:
     contract.parent.mkdir(parents=True)
     dependency.parent.mkdir(parents=True)
     escaped.parent.mkdir(parents=True)
-    source = (
-        "#pragma version 0.4.3\n"
-        "from pkg import dep\n"
-        "from ...outside import escape\n"
-    )
+    source = "#pragma version 0.4.3\nfrom pkg import dep\nfrom ...outside import escape\n"
     contract.write_text(source, encoding="utf-8")
     dependency.write_text("# @version 0.4.0\n", encoding="utf-8")
     escaped.write_text("# @version 0.4.0\n", encoding="utf-8")
@@ -1085,11 +1121,7 @@ def test_resolve_import_closure_search_path_dependency(tmp_path) -> None:
         dependency.resolve().relative_to(closure.common_root)
     with target_overlay({contract: source}, "0.4.3", (site_packages, project)) as overlay:
         assert overlay is not None
-        assert not any(
-            path.name == "dep.vy"
-            for path in overlay.root.rglob("*")
-            if path.is_file()
-        )
+        assert not any(path.name == "dep.vy" for path in overlay.root.rglob("*") if path.is_file())
 
 
 def test_resolve_import_closure_create2_alias_resolves_to_real_file(tmp_path) -> None:
@@ -1109,9 +1141,7 @@ def test_resolve_import_closure_create2_alias_resolves_to_real_file(tmp_path) ->
 
 
 def test_resolve_import_closure_is_idempotent(tmp_path) -> None:
-    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(
-        tmp_path
-    )
+    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(tmp_path)
 
     first = resolve_import_closure(sources, search_paths)
     second = resolve_import_closure(sources, search_paths)
@@ -1128,9 +1158,7 @@ def test_resolve_import_closure_empty_sources_raises() -> None:
 
 
 def test_materialize_target_overlay_writes_into_given_root(tmp_path) -> None:
-    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(
-        tmp_path
-    )
+    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(tmp_path)
     with target_overlay(sources, "0.4.3", search_paths) as temporary:
         assert temporary is not None
         expected_files = {
@@ -1147,17 +1175,13 @@ def test_materialize_target_overlay_writes_into_given_root(tmp_path) -> None:
     assert overlay.root == root
     assert all(path.is_relative_to(root) for path in overlay.paths.values())
     assert {
-        path.relative_to(root): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()
     } == expected_files
     assert root.exists()
 
 
 def test_materialize_target_overlay_output_root_under_project_root(tmp_path) -> None:
-    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(
-        tmp_path
-    )
+    _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(tmp_path)
     project = tmp_path / "project"
     root = project / "overlay-output"
 
@@ -1165,9 +1189,7 @@ def test_materialize_target_overlay_output_root_under_project_root(tmp_path) -> 
 
     assert overlay is not None
     assert list(root.rglob("pyproject.toml")) == [root / "pyproject.toml"]
-    assert (root / "pyproject.toml").read_bytes() == (
-        project / "pyproject.toml"
-    ).read_bytes()
+    assert (root / "pyproject.toml").read_bytes() == (project / "pyproject.toml").read_bytes()
 
 
 def test_materialize_target_overlay_empty_sources_returns_none(tmp_path) -> None:
@@ -1179,9 +1201,7 @@ def test_materialize_target_overlay_empty_sources_returns_none(tmp_path) -> None
 def test_closure_overlay_places_external_dep_import_root_relative(
     tmp_path,
 ) -> None:
-    contract, dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    contract, dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     root = tmp_path / "overlay"
 
     overlay = materialize_target_overlay(
@@ -1205,13 +1225,9 @@ def test_closure_overlay_places_external_dep_import_root_relative(
 
 
 def test_closure_overlay_places_external_candidate_bytes(tmp_path) -> None:
-    _contract, dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    _contract, dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     candidate = (
-        "#pragma version 0.4.3\n"
-        "EXTERNAL: constant(uint256) = 99\n"
-        "# candidate bytes stay exact\n"
+        "#pragma version 0.4.3\nEXTERNAL: constant(uint256) = 99\n# candidate bytes stay exact\n"
     )
     sources[dependency] = candidate
     root = tmp_path / "overlay"
@@ -1291,9 +1307,7 @@ def test_closure_overlay_preserves_symlinked_import_path(tmp_path) -> None:
 
 
 def test_closure_overlay_paths_equal_resolved_closure(tmp_path) -> None:
-    _contract, _dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    _contract, _dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     closure = resolve_import_closure(sources, search_paths)
     root = tmp_path / "overlay"
 
@@ -1402,9 +1416,7 @@ def test_closure_overlay_identical_content_collisions_dedupe(tmp_path) -> None:
 def test_closure_overlay_drops_external_search_paths_from_compile_paths(
     tmp_path,
 ) -> None:
-    _contract, _dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    _contract, _dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
 
     with target_overlay(
         sources,
@@ -1428,9 +1440,7 @@ def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
     create2_address = project / "snekmate" / "utils" / "create2_address.vy"
     create2_address.parent.mkdir(parents=True)
     (project / "pyproject.toml").write_text("[project]\nname='create2'\n")
-    contract_source = (
-        "#pragma version 0.4.3\nfrom snekmate.utils import create2\n"
-    )
+    contract_source = "#pragma version 0.4.3\nfrom snekmate.utils import create2\n"
     candidate = (
         "#pragma version 0.4.3\n"
         "def _compute_address(value: uint256) -> address:\n"
@@ -1453,13 +1463,8 @@ def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
     assert closure is not None
     assert default is not None
     alias = closure_root / "snekmate" / "utils" / "create2.vy"
-    assert (
-        alias.read_text()
-        == candidate.replace("_compute_address", "_compute_create2_address")
-    )
-    assert (
-        closure_root / "snekmate" / "utils" / "create2_address.vy"
-    ).read_text() == candidate
+    assert alias.read_text() == candidate.replace("_compute_address", "_compute_create2_address")
+    assert (closure_root / "snekmate" / "utils" / "create2_address.vy").read_text() == candidate
     assert alias not in closure.paths.values()
     assert not (default_root / "snekmate" / "utils" / "create2.vy").exists()
 
@@ -1467,13 +1472,8 @@ def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
 def test_default_overlay_create2_alias_collision_preserves_last_write(
     tmp_path,
 ) -> None:
-    create2_source = (
-        "# @version 0.3.10\n"
-        "REAL_CREATE2: constant(uint256) = 2\n"
-    )
-    _create2_address, _create2, sources = _write_create2_collision_fixture(
-        tmp_path, create2_source
-    )
+    create2_source = "# @version 0.3.10\nREAL_CREATE2: constant(uint256) = 2\n"
+    _create2_address, _create2, sources = _write_create2_collision_fixture(tmp_path, create2_source)
     root = tmp_path / "overlay"
 
     overlay = materialize_target_overlay(sources, "0.4.3", root)
@@ -1485,13 +1485,8 @@ def test_default_overlay_create2_alias_collision_preserves_last_write(
 
 
 def test_closure_overlay_create2_alias_collision_raises(tmp_path) -> None:
-    create2_source = (
-        "# @version 0.3.10\n"
-        "REAL_CREATE2: constant(uint256) = 2\n"
-    )
-    create2_address, create2, sources = _write_create2_collision_fixture(
-        tmp_path, create2_source
-    )
+    create2_source = "# @version 0.3.10\nREAL_CREATE2: constant(uint256) = 2\n"
+    create2_address, create2, sources = _write_create2_collision_fixture(tmp_path, create2_source)
 
     with pytest.raises(OverlayLayoutConflictError) as exc_info:
         materialize_target_overlay(
@@ -1509,9 +1504,7 @@ def test_closure_overlay_create2_alias_collision_raises(tmp_path) -> None:
 def test_closure_overlay_create2_alias_identical_content_dedupes(
     tmp_path,
 ) -> None:
-    _create2_address, create2, sources = _write_create2_collision_fixture(
-        tmp_path, None
-    )
+    _create2_address, create2, sources = _write_create2_collision_fixture(tmp_path, None)
     root = tmp_path / "overlay"
 
     overlay = materialize_target_overlay(
@@ -1523,16 +1516,12 @@ def test_closure_overlay_create2_alias_identical_content_dedupes(
 
     assert overlay is not None
     target = root / "snekmate" / "utils" / "create2.vy"
-    assert target.read_text() == _target_validation_source(
-        create2.read_text(), "0.4.3"
-    )
+    assert target.read_text() == _target_validation_source(create2.read_text(), "0.4.3")
     assert overlay.paths[create2.resolve()] == target
 
 
 def test_closure_overlay_copies_project_pyproject_only(tmp_path) -> None:
-    _contract, dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    _contract, dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     project_pyproject = tmp_path / "project" / "pyproject.toml"
     site_pyproject = search_paths[0] / "pyproject.toml"
     site_pyproject.write_text("[project]\nname='site-packages'\n")
@@ -1550,8 +1539,7 @@ def test_closure_overlay_copies_project_pyproject_only(tmp_path) -> None:
     assert overlay is not None
     assert (root / "pyproject.toml").read_bytes() == project_pyproject.read_bytes()
     assert site_pyproject.read_bytes() not in {
-        path.read_bytes()
-        for path in root.rglob("pyproject.toml")
+        path.read_bytes() for path in root.rglob("pyproject.toml")
     }
 
 
@@ -1584,31 +1572,20 @@ def test_closure_overlay_excludes_nested_search_path_pyprojects(
     assert overlay is not None
     assert (root / "pyproject.toml").read_bytes() == project_pyproject.read_bytes()
     assert overlay.paths[dependency.resolve()] == root / "depkg" / "util.vy"
-    assert not (
-        root
-        / "vendor"
-        / "site-packages"
-        / "depkg"
-        / "pyproject.toml"
-    ).exists()
+    assert not (root / "vendor" / "site-packages" / "depkg" / "pyproject.toml").exists()
     assert dependency_pyproject.read_bytes() not in {
-        path.read_bytes()
-        for path in root.rglob("pyproject.toml")
+        path.read_bytes() for path in root.rglob("pyproject.toml")
     }
 
 
 def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
-    contract, dependency, sources, search_paths = _write_external_import_fixture(
-        tmp_path
-    )
+    contract, dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     project = contract.parents[1]
     local_dependency = contract.with_name("local.vy")
     implicit_root = tmp_path / "implicit"
     explicit_root = tmp_path / "explicit"
 
-    implicit = materialize_target_overlay(
-        sources, "0.4.3", implicit_root, search_paths
-    )
+    implicit = materialize_target_overlay(sources, "0.4.3", implicit_root, search_paths)
     explicit = materialize_target_overlay(
         sources,
         "0.4.3",
@@ -1622,9 +1599,7 @@ def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
 
     def tree(root: Path) -> dict[Path, bytes]:
         return {
-            path.relative_to(root): path.read_bytes()
-            for path in root.rglob("*")
-            if path.is_file()
+            path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()
         }
 
     expected_tree = {
@@ -1637,16 +1612,13 @@ def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
     assert tree(implicit_root) == expected_tree
     assert tree(explicit_root) == expected_tree
     assert dependency.resolve() not in implicit.paths
-    assert {
-        path: target.relative_to(implicit_root)
-        for path, target in implicit.paths.items()
-    } == {contract.resolve(): Path("src/main.vy")}
-    assert {
-        path: target.relative_to(explicit_root)
-        for path, target in explicit.paths.items()
-    } == {contract.resolve(): Path("src/main.vy")}
+    assert {path: target.relative_to(implicit_root) for path, target in implicit.paths.items()} == {
+        contract.resolve(): Path("src/main.vy")
+    }
+    assert {path: target.relative_to(explicit_root) for path, target in explicit.paths.items()} == {
+        contract.resolve(): Path("src/main.vy")
+    }
     assert implicit.source_roots == explicit.source_roots == (project.resolve(),)
-
 
 
 def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -> None:
@@ -1673,6 +1645,7 @@ def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["path"] = path
         calls["search_paths"] = config.compiler_search_paths
@@ -1730,6 +1703,7 @@ def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_pa
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         imported_overlay = path.parent / "modules" / "lp_shared.vy"
         calls["imported_source"] = imported_overlay.read_text(encoding="utf-8")
@@ -1751,9 +1725,7 @@ def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_pa
 
     assert result.status == "passed"
     assert "from snekmate.utils import create2" in calls["imported_source"]
-    assert "create2._compute_create2_address(salt, init_hash, factory)" in calls[
-        "imported_source"
-    ]
+    assert "create2._compute_create2_address(salt, init_hash, factory)" in calls["imported_source"]
 
 
 def test_target_overlay_skips_unrelated_sibling_sources(tmp_path) -> None:
@@ -1785,7 +1757,9 @@ def test_target_overlay_preserves_shallow_absolute_import_roots(tmp_path) -> Non
     contract.parent.mkdir(parents=True)
     dependency.parent.mkdir(parents=True)
     contract.write_text("# @version 0.4.0\nfrom src.modules import constants\n", encoding="utf-8")
-    dependency.write_text("# @version 0.4.0\nMAX_BPS: constant(uint256) = 10_000\n", encoding="utf-8")
+    dependency.write_text(
+        "# @version 0.4.0\nMAX_BPS: constant(uint256) = 10_000\n", encoding="utf-8"
+    )
 
     with target_overlay(
         {contract: "#pragma version 0.4.3\nfrom src.modules import constants\n"},
@@ -1805,7 +1779,9 @@ def test_target_overlay_copies_json_interfaces(tmp_path) -> None:
     interface = project / "src" / "interfaces" / "IValidator.json"
     contract.parent.mkdir(parents=True)
     interface.parent.mkdir(parents=True)
-    contract.write_text("# @version 0.4.3\nfrom src.interfaces import IValidator\n", encoding="utf-8")
+    contract.write_text(
+        "# @version 0.4.3\nfrom src.interfaces import IValidator\n", encoding="utf-8"
+    )
     interface.write_text("[]\n", encoding="utf-8")
 
     with target_overlay(
@@ -1825,7 +1801,9 @@ def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) ->
     dependency = project / "snekmate" / "utils" / "create2_address.vy"
     contract.parent.mkdir(parents=True)
     dependency.parent.mkdir(parents=True)
-    contract.write_text("# @version 0.4.0\nfrom snekmate.utils import create2_address\n", encoding="utf-8")
+    contract.write_text(
+        "# @version 0.4.0\nfrom snekmate.utils import create2_address\n", encoding="utf-8"
+    )
     dependency.write_text(
         "# @version 0.4.0\n"
         "def _compute_address(salt: bytes32, init_hash: bytes32, factory: address) -> address:\n"
@@ -1841,9 +1819,9 @@ def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) ->
         assert overlay is not None
         overlay_contract = overlay.paths[contract.resolve()]
         overlay_project = overlay_contract.parents[1]
-        alias_source = (
-            overlay_project / "snekmate" / "utils" / "create2.vy"
-        ).read_text(encoding="utf-8")
+        alias_source = (overlay_project / "snekmate" / "utils" / "create2.vy").read_text(
+            encoding="utf-8"
+        )
 
     assert "def _compute_create2_address(" in alias_source
     assert "def _compute_address(" not in alias_source
@@ -1899,8 +1877,7 @@ def test_target_overlay_preserves_nested_package_search_roots(tmp_path) -> None:
     contract.parent.mkdir(parents=True)
     ownable.parent.mkdir(parents=True)
     contract.write_text(
-        "# @version 0.4.3\n"
-        "from pcaversaccio.snekmate.src.snekmate.auth import ownable\n",
+        "# @version 0.4.3\nfrom pcaversaccio.snekmate.src.snekmate.auth import ownable\n",
         encoding="utf-8",
     )
     ownable.write_text("# @version 0.4.3\nOWNER: public(address)\n", encoding="utf-8")
@@ -1946,8 +1923,12 @@ def test_target_overlay_copies_imported_site_package_sources(tmp_path) -> None:
         (project, site_packages),
     ) as overlay:
         assert overlay is not None
-        assert (overlay.root / "venv" / "lib" / "python3.10" / "site-packages" / "curve_std" / "ema.vy").exists()
-        assert overlay.root / "venv" / "lib" / "python3.10" / "site-packages" in overlay.search_paths
+        assert (
+            overlay.root / "venv" / "lib" / "python3.10" / "site-packages" / "curve_std" / "ema.vy"
+        ).exists()
+        assert (
+            overlay.root / "venv" / "lib" / "python3.10" / "site-packages" in overlay.search_paths
+        )
 
 
 def test_target_overlay_resolves_relative_dependency_imports(tmp_path) -> None:
@@ -2007,7 +1988,10 @@ def test_target_overlay_preserves_exact_override_bytes(tmp_path) -> None:
     math = package / "math.vy"
     package.mkdir()
     contract.write_text("# @version 0.4.0\nimport math\n", encoding="utf-8")
-    math.write_text("# @version 0.4.0\n@internal\ndef mul(x: uint256, y: uint256) -> uint256:\n    return x * y\n", encoding="utf-8")
+    math.write_text(
+        "# @version 0.4.0\n@internal\ndef mul(x: uint256, y: uint256) -> uint256:\n    return x * y\n",
+        encoding="utf-8",
+    )
 
     with target_overlay(
         {contract: "#pragma version 0.4.3\nimport math\n"},
@@ -2022,7 +2006,9 @@ def test_target_overlay_preserves_exact_override_bytes(tmp_path) -> None:
         assert (overlay.root / "math.vy").exists()
 
 
-def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:
+def test_compile_target_source_keeps_decimal_flag_off_without_decimal(
+    monkeypatch, tmp_path
+) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
     calls: dict[str, object] = {}
@@ -2035,6 +2021,7 @@ def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatc
         config: Config,
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["enable_decimals"] = config.enable_decimals
         return CompileResult("passed", artifacts={})
@@ -2063,7 +2050,12 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
         "passed",
         artifacts={
             "abi": [
-                {"type": "constructor", "stateMutability": "nonpayable", "inputs": [], "outputs": []},
+                {
+                    "type": "constructor",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [],
+                },
                 {
                     "type": "function",
                     "name": "f",
@@ -2073,7 +2065,10 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
                     "gas": 1234,
                 },
             ],
-            "method_identifiers": {"__init__(string,string,uint256)": "0xdeadbeef", "f()": "0x26121ff0"},
+            "method_identifiers": {
+                "__init__(string,string,uint256)": "0xdeadbeef",
+                "f()": "0x26121ff0",
+            },
         },
     )
     target = CompileResult(
@@ -2087,7 +2082,12 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
                     "inputs": [],
                     "outputs": [{"type": "uint256", "name": ""}],
                 },
-                {"type": "constructor", "stateMutability": "nonpayable", "inputs": [], "outputs": []},
+                {
+                    "type": "constructor",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [],
+                },
             ],
             "method_identifiers": {"f()": "0x26121ff0"},
         },
@@ -2588,15 +2588,11 @@ def test_compare_artifacts_preserves_matching_non_interface_paths_as_unknown(
 ) -> None:
     source = CompileResult(
         "passed",
-        artifacts={
-            "layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}
-        },
+        artifacts={"layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}},
     )
     target = CompileResult(
         "passed",
-        artifacts={
-            "layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}
-        },
+        artifacts={"layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}},
     )
 
     assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
@@ -2617,20 +2613,12 @@ def test_compare_artifacts_preserves_ambiguous_path_delimiters_fail_closed(
     source = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "pools": {"slot": 4, "type": "DynArray[IPool, 8]"}
-                }
-            }
+            "layout": {"storage_layout": {"pools": {"slot": 4, "type": "DynArray[IPool, 8]"}}}
         },
     )
     target = CompileResult(
         "passed",
-        artifacts={
-            "layout": {
-                "storage_layout": {"pools": {"slot": 4, "type": target_type}}
-            }
-        },
+        artifacts={"layout": {"storage_layout": {"pools": {"slot": 4, "type": target_type}}}},
     )
 
     assert unavailable_validation_artifacts(target) == [
@@ -2688,9 +2676,7 @@ def test_compare_artifacts_normalizes_nested_module_layouts() -> None:
                         }
                     },
                 },
-                "code_layout": {
-                    "ignored": {"offset": 0, "type": "uint256", "length": 32}
-                },
+                "code_layout": {"ignored": {"offset": 0, "type": "uint256", "length": 32}},
             }
         },
     )
@@ -2706,9 +2692,7 @@ def test_layout_artifact_accepts_code_only_immutables_as_empty_storage() -> None
             "layout": {
                 "code_layout": {
                     "OWNER": {"offset": 0, "type": "address", "length": 32},
-                    "module": {
-                        "LIMIT": {"offset": 32, "type": "uint256", "length": 32}
-                    },
+                    "module": {"LIMIT": {"offset": 32, "type": "uint256", "length": 32}},
                 }
             }
         },
@@ -2728,15 +2712,11 @@ def test_layout_artifact_accepts_all_known_top_level_wrappers() -> None:
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "owner": {"slot": 0, "type": "address", "n_slots": 1}
-                },
+                "storage_layout": {"owner": {"slot": 0, "type": "address", "n_slots": 1}},
                 "transient_storage_layout": {
                     "scratch": {"slot": 0, "type": "uint256", "n_slots": 1}
                 },
-                "code_layout": {
-                    "LIMIT": {"offset": 0, "type": "uint256", "length": 32}
-                },
+                "code_layout": {"LIMIT": {"offset": 0, "type": "uint256", "length": 32}},
             }
         },
     )
@@ -2758,9 +2738,7 @@ def test_layout_artifact_rejects_unknown_top_level_wrapper_siblings(
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "owner": {"slot": 0, "type": "address", "n_slots": 1}
-                },
+                "storage_layout": {"owner": {"slot": 0, "type": "address", "n_slots": 1}},
                 **unknown_sibling,
             }
         },
@@ -2812,12 +2790,8 @@ def test_layout_artifact_rejects_malformed_code_layout(
             }
         },
         {
-            "storage_layout": {
-                "owner": {"slot": 0, "type": "address", "n_slots": 1}
-            },
-            "transient_storage_layout": {
-                "scratch": {"slot": 0, "type": "uint256"}
-            },
+            "storage_layout": {"owner": {"slot": 0, "type": "address", "n_slots": 1}},
+            "transient_storage_layout": {"scratch": {"slot": 0, "type": "uint256"}},
         },
     ],
 )
@@ -2845,11 +2819,7 @@ def test_layout_artifact_rejects_mixed_n_slots_schema(
                 }
             }
         },
-        {
-            "storage_layout": {
-                "values": {"slot": 2**256 - 2, "type": "uint256[3]", "n_slots": 3}
-            }
-        },
+        {"storage_layout": {"values": {"slot": 2**256 - 2, "type": "uint256[3]", "n_slots": 3}}},
     ],
 )
 def test_layout_artifact_rejects_storage_spans_past_uint256(
@@ -2920,13 +2890,7 @@ def test_compare_artifact_details_qualifies_nested_module_changes() -> None:
     "malformed_layout",
     [
         {"storage_layout": {"vault": {"owner": {"slot": 0}}}},
-        {
-            "storage_layout": {
-                "vault": {
-                    "owner": {"slot": 0, "type": "address", "n_slots": None}
-                }
-            }
-        },
+        {"storage_layout": {"vault": {"owner": {"slot": 0, "type": "address", "n_slots": None}}}},
         {
             "storage_layout": {
                 "vault": {
@@ -3012,9 +2976,7 @@ def test_compare_artifacts_rejects_empty_nested_storage_namespace() -> None:
     valid = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {"vault": {"owner": {"slot": 0, "type": "address"}}}
-            }
+            "layout": {"storage_layout": {"vault": {"owner": {"slot": 0, "type": "address"}}}}
         },
     )
 
@@ -3025,16 +2987,8 @@ def test_compare_artifacts_rejects_empty_nested_storage_namespace() -> None:
 @pytest.mark.parametrize(
     "layout",
     [
-        {
-            "storage_layout": {
-                "owner": {"slot": 0, "type": "address", "location": "transient"}
-            }
-        },
-        {
-            "storage_layout": {
-                "owner": {"slot": 0, "type": "address", "location": "memory"}
-            }
-        },
+        {"storage_layout": {"owner": {"slot": 0, "type": "address", "location": "transient"}}},
+        {"storage_layout": {"owner": {"slot": 0, "type": "address", "location": "memory"}}},
         {
             "storage_layout": {},
             "transient_storage_layout": {
@@ -3056,9 +3010,7 @@ def test_compare_artifacts_compares_n_slots_when_both_layouts_supply_it() -> Non
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "values": {"slot": 0, "type": "CustomStruct", "n_slots": 1}
-                }
+                "storage_layout": {"values": {"slot": 0, "type": "CustomStruct", "n_slots": 1}}
             }
         },
     )
@@ -3066,17 +3018,14 @@ def test_compare_artifacts_compares_n_slots_when_both_layouts_supply_it() -> Non
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "values": {"slot": 0, "type": "CustomStruct", "n_slots": 2}
-                }
+                "storage_layout": {"values": {"slot": 0, "type": "CustomStruct", "n_slots": 2}}
             }
         },
     )
 
     assert compare_artifacts(source, target) == (None, None, False)
     assert compare_artifact_details(source, target)[2] == [
-        "changed storage: values slot 0 CustomStruct -> 0 CustomStruct "
-        "(n_slots 1 -> 2)"
+        "changed storage: values slot 0 CustomStruct -> 0 CustomStruct (n_slots 1 -> 2)"
     ]
 
 
@@ -3088,11 +3037,7 @@ def test_compare_artifacts_infers_known_width_when_legacy_layout_omits_it() -> N
     target = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "values": {"slot": 0, "type": "uint256", "n_slots": 1}
-                }
-            }
+            "layout": {"storage_layout": {"values": {"slot": 0, "type": "uint256", "n_slots": 1}}}
         },
     )
 
@@ -3103,11 +3048,7 @@ def test_layout_artifact_rejects_explicit_width_for_known_scalar() -> None:
     result = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "values": {"slot": 0, "type": "uint256", "n_slots": 2}
-                }
-            }
+            "layout": {"storage_layout": {"values": {"slot": 0, "type": "uint256", "n_slots": 2}}}
         },
     )
 
@@ -3148,9 +3089,7 @@ def test_compare_artifacts_infers_known_legacy_storage_widths(
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "value": {"slot": 0, "type": type_name, "n_slots": n_slots}
-                }
+                "storage_layout": {"value": {"slot": 0, "type": type_name, "n_slots": n_slots}}
             }
         },
     )
@@ -3163,18 +3102,12 @@ def test_compare_artifacts_infers_known_legacy_storage_widths(
 def test_compare_artifacts_infers_explicit_legacy_interface_width() -> None:
     source = CompileResult(
         "passed",
-        artifacts={
-            "layout": {"pool": {"slot": 0, "type": "interface Pool"}}
-        },
+        artifacts={"layout": {"pool": {"slot": 0, "type": "interface Pool"}}},
     )
     target = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "pool": {"slot": 0, "type": "Pool.vyi", "n_slots": 1}
-                }
-            }
+            "layout": {"storage_layout": {"pool": {"slot": 0, "type": "Pool.vyi", "n_slots": 1}}}
         },
     )
 
@@ -3282,10 +3215,7 @@ def test_compare_artifacts_accepts_pairwise_interface_marker_omission(
             "ast": {
                 "ast_type": "Module",
                 "body": [
-                    *(
-                        {"ast_type": "InterfaceDef", "name": name}
-                        for name in interface_names
-                    ),
+                    *({"ast_type": "InterfaceDef", "name": name} for name in interface_names),
                     {
                         "ast_type": "VariableDecl",
                         "target": {"ast_type": "Name", "id": "value"},
@@ -3331,11 +3261,7 @@ def test_compare_artifacts_requires_top_level_target_interface_evidence(
     target = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
-                }
-            },
+            "layout": {"storage_layout": {"value": {"slot": 0, "type": "HashMap[address, Pool]"}}},
             "ast": {
                 "ast_type": "Module",
                 "body": [
@@ -3390,11 +3316,7 @@ def test_compare_artifacts_rejects_missing_or_malformed_target_ast(
     target = CompileResult(
         "passed",
         artifacts={
-            "layout": {
-                "storage_layout": {
-                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
-                }
-            },
+            "layout": {"storage_layout": {"value": {"slot": 0, "type": "HashMap[address, Pool]"}}},
             "ast": target_ast,
         },
     )
@@ -3571,9 +3493,7 @@ def test_compare_artifacts_rejects_one_sided_unknown_storage_width() -> None:
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "value": {"slot": 0, "type": "CustomStruct", "n_slots": 2}
-                }
+                "storage_layout": {"value": {"slot": 0, "type": "CustomStruct", "n_slots": 2}}
             }
         },
     )
@@ -3582,8 +3502,7 @@ def test_compare_artifacts_rejects_one_sided_unknown_storage_width() -> None:
     assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
     assert compare_artifacts(source, target) == (None, None, False)
     assert compare_artifact_details(source, target)[2] == [
-        "changed storage: value slot 0 CustomStruct -> 0 CustomStruct "
-        "(n_slots unknown -> 2)"
+        "changed storage: value slot 0 CustomStruct -> 0 CustomStruct (n_slots unknown -> 2)"
     ]
 
 
@@ -3616,9 +3535,7 @@ def test_compare_artifacts_accepts_symmetric_unknown_omitted_widths() -> None:
 def test_layout_artifact_rejects_flattened_and_normalized_name_collisions(
     storage_layout: dict[str, object],
 ) -> None:
-    result = CompileResult(
-        "passed", artifacts={"layout": {"storage_layout": storage_layout}}
-    )
+    result = CompileResult("passed", artifacts={"layout": {"storage_layout": storage_layout}})
 
     assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers", "layout"]
 
@@ -3640,9 +3557,7 @@ def test_layout_artifact_distinguishes_legacy_storage_layout_variable_from_wrapp
         "passed",
         artifacts={
             "layout": {
-                "storage_layout": {
-                    "storage_layout": {"slot": 0, "type": "uint256", "n_slots": 1}
-                }
+                "storage_layout": {"storage_layout": {"slot": 0, "type": "uint256", "n_slots": 1}}
             }
         },
     )
@@ -3677,9 +3592,7 @@ def test_layout_artifact_preserves_explicit_legacy_wrapper_named_variables(
     )
     target_layout: dict[str, object] = {"storage_layout": {}}
     wrapper = "transient_storage_layout" if location == "transient" else "storage_layout"
-    target_layout[wrapper] = {
-        name: {"slot": 0, "type": "uint256", "n_slots": 1}
-    }
+    target_layout[wrapper] = {name: {"slot": 0, "type": "uint256", "n_slots": 1}}
     target = CompileResult("passed", artifacts={"layout": target_layout})
 
     assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
@@ -3719,9 +3632,7 @@ def test_layout_artifact_rejects_truncated_or_ambiguous_wrapper_named_roots(
 def test_layout_artifact_rejects_slots_outside_uint256(slot: int | str) -> None:
     result = CompileResult(
         "passed",
-        artifacts={
-            "layout": {"storage_layout": {"owner": {"slot": slot, "type": "address"}}}
-        },
+        artifacts={"layout": {"storage_layout": {"owner": {"slot": slot, "type": "address"}}}},
     )
 
     assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers", "layout"]
@@ -3730,20 +3641,14 @@ def test_layout_artifact_rejects_slots_outside_uint256(slot: int | str) -> None:
 def test_compare_artifacts_compares_transient_layouts_explicitly() -> None:
     source = CompileResult(
         "passed",
-        artifacts={
-            "layout": {
-                "scratch": {"location": "transient", "slot": 0, "type": "uint256"}
-            }
-        },
+        artifacts={"layout": {"scratch": {"location": "transient", "slot": 0, "type": "uint256"}}},
     )
     target = CompileResult(
         "passed",
         artifacts={
             "layout": {
                 "storage_layout": {},
-                "transient_storage_layout": {
-                    "scratch": {"slot": 1, "type": "address"}
-                },
+                "transient_storage_layout": {"scratch": {"slot": 1, "type": "address"}},
             }
         },
     )
@@ -4221,9 +4126,7 @@ def test_compare_artifact_details_reports_full_storage_changes() -> None:
     assert not any(line.startswith("... ") for line in storage_diff)
 
 
-def test_compile_target_archive_requires_overlay_staging(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_compile_target_archive_requires_overlay_staging(tmp_path: Path, monkeypatch) -> None:
     entry = tmp_path / "main.vy"
     entry.write_text("#pragma version 0.4.3\n")
     overlay = TargetOverlay(tmp_path / "overlay", {}, (), ())
@@ -4231,7 +4134,7 @@ def test_compile_target_archive_requires_overlay_staging(
     def unexpected_run(*_args, **_kwargs):
         pytest.fail("archive compiler must not run without a staged entry")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", unexpected_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", unexpected_run)
 
     result = compile_target_archive(
         entry,
@@ -4246,9 +4149,7 @@ def test_compile_target_archive_requires_overlay_staging(
     assert "not staged" in result.stderr
 
 
-def test_compile_target_archive_replaces_existing_output(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_compile_target_archive_replaces_existing_output(tmp_path: Path, monkeypatch) -> None:
     entry = tmp_path / "main.vy"
     staged = tmp_path / "overlay" / "main.vy"
     staged.parent.mkdir()
@@ -4263,12 +4164,12 @@ def test_compile_target_archive_replaces_existing_output(
     )
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str], **_kwargs):
+    def fake_run(command: list[str], *_args, **_kwargs):
         calls.append(command)
         Path(command[command.index("-o") + 1]).write_bytes(b"new archive")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return _compiler_process(command, stdout="")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = compile_target_archive(
         entry,
@@ -4301,11 +4202,11 @@ def test_compile_target_archive_cleans_temporary_output_on_failure(
         (staged.parent,),
     )
 
-    def fake_run(command: list[str], **_kwargs):
+    def fake_run(command: list[str], *_args, **_kwargs):
         Path(command[command.index("-o") + 1]).write_bytes(b"partial")
-        return subprocess.CompletedProcess(command, 1, "", "archive failed")
+        return _compiler_process(command, returncode=1, stdout="", stderr="archive failed")
 
-    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
 
     result = compile_target_archive(
         entry,

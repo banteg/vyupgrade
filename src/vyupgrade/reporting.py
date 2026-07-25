@@ -132,13 +132,9 @@ def _render_text_file(file: FileReport) -> str:
             lines.append(f"  {error_label}:")
             lines.extend(f"    {line}" for line in error.splitlines())
     if file.source_unavailable_formats:
-        lines.append(
-            "  source unavailable outputs: " + ", ".join(file.source_unavailable_formats)
-        )
+        lines.append("  source unavailable outputs: " + ", ".join(file.source_unavailable_formats))
     if file.target_unavailable_formats:
-        lines.append(
-            "  target unavailable outputs: " + ", ".join(file.target_unavailable_formats)
-        )
+        lines.append("  target unavailable outputs: " + ", ".join(file.target_unavailable_formats))
     for label, equal, diff in _artifact_checks(file):
         if equal is not None:
             lines.append(f"  {label}: {equal}")
@@ -173,24 +169,18 @@ def _render_text_summary(report: RunReport) -> str:
         lines.append(f"dependencies: {len(report.closure.dependencies)} upgraded")
         if report.closure.output_status != "skipped":
             lines.append(
-                "closure output: "
-                f"{report.closure.output_dir} ({report.closure.output_status})"
+                f"closure output: {report.closure.output_dir} ({report.closure.output_status})"
             )
         if report.closure.archive_status != "skipped":
             lines.append(
-                "closure archive: "
-                f"{report.closure.archive} ({report.closure.archive_status})"
+                f"closure archive: {report.closure.archive} ({report.closure.archive_status})"
             )
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )
     if waiver_flags:
         lines.append(f"validation waivers: {', '.join(waiver_flags)}")
-    if (
-        not report.write_requested
-        and report.changed_count
-        and report.closure is None
-    ):
+    if not report.write_requested and report.changed_count and report.closure is None:
         lines.append("run with --write to apply these changes")
     if report.write_status != "skipped":
         lines.append(f"write transaction: {report.write_status}")
@@ -255,11 +245,7 @@ def _render_summary(console: Console, report: RunReport) -> None:
     )
     if waiver_flags:
         console.print(_label_value("validation waivers", ", ".join(waiver_flags), "vy.warning"))
-    if (
-        not report.write_requested
-        and report.changed_count
-        and report.closure is None
-    ):
+    if not report.write_requested and report.changed_count and report.closure is None:
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
     if report.write_status != "skipped":
         console.print(
@@ -325,9 +311,7 @@ def _render_file(console: Console, file: FileReport) -> None:
     if file.final_sha256 is not None:
         console.print(_indented(f"final SHA-256: {file.final_sha256}", "vy.muted"))
     if file.final_matches_candidate is not None:
-        console.print(
-            _bool_line("final bytes match candidate", file.final_matches_candidate)
-        )
+        console.print(_bool_line("final bytes match candidate", file.final_matches_candidate))
     console.print(
         _label_value(
             "  validation decision",
@@ -339,9 +323,7 @@ def _render_file(console: Console, file: FileReport) -> None:
         console.print(_indented(f"validation blocker: {issue.message}", "vy.error"))
     for issue in file.validation_decision.waivers:
         console.print(
-            _indented(
-                f"validation waiver: {issue.waiver} ({issue.message})", "vy.warning"
-            )
+            _indented(f"validation waiver: {issue.waiver} ({issue.message})", "vy.warning")
         )
 
 

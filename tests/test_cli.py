@@ -298,9 +298,7 @@ def test_write_mode_reports_timed_out_mamushi_without_mutation(
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    code = main(
-        [str(contract), "--write", "--format", "mamushi", "--report-json", str(report)]
-    )
+    code = main([str(contract), "--write", "--format", "mamushi", "--report-json", str(report)])
 
     assert code == 6
     assert contract.read_text(encoding="utf-8") == original
@@ -395,9 +393,7 @@ def test_formatter_output_that_fails_final_validation_is_not_committed(
     monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    code = main(
-        [str(contract), "--write", "--format", "mamushi", "--report-json", str(report)]
-    )
+    code = main([str(contract), "--write", "--format", "mamushi", "--report-json", str(report)])
 
     assert code == 2
     assert contract.read_text(encoding="utf-8") == original
@@ -478,9 +474,7 @@ def test_post_write_test_failure_returns_nonzero_and_persists_report(
         ),
     )
 
-    code = main(
-        [str(contract), "--write", "--test-command", "false", "--report-json", str(report)]
-    )
+    code = main([str(contract), "--write", "--test-command", "false", "--report-json", str(report)])
 
     assert code == 8
     assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
@@ -515,9 +509,7 @@ def test_post_write_test_runtime_errors_return_nonzero_and_persist_report(
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    code = main(
-        [str(contract), "--write", "--test-command", "tests", "--report-json", str(report)]
-    )
+    code = main([str(contract), "--write", "--test-command", "tests", "--report-json", str(report)])
 
     assert code == 8
     assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
@@ -543,9 +535,7 @@ def test_post_write_test_mutation_is_detected_in_final_hashes(
 
     monkeypatch.setattr(cli.subprocess, "run", mutate_planned_file)
 
-    code = main(
-        [str(contract), "--write", "--test-command", "tests", "--report-json", str(report)]
-    )
+    code = main([str(contract), "--write", "--test-command", "tests", "--report-json", str(report)])
 
     assert code == 8
     data = json.loads(report.read_text())
@@ -656,9 +646,7 @@ def test_allow_unvalidated_source_waives_source_failure(
     data = json.loads(report.read_text())
     assert data["wrote_changes"] is True
     assert data["validation_decision"]["status"] == "waived"
-    assert data["validation_decision"]["waivers"][0]["waiver"] == (
-        "--allow-unvalidated-source"
-    )
+    assert data["validation_decision"]["waivers"][0]["waiver"] == ("--allow-unvalidated-source")
     assert "write validation: waived" in capsys.readouterr().out
 
 
@@ -672,9 +660,7 @@ def test_patch_level_abi_mismatch_blocks_even_when_diagnostic_is_ignored(
     monkeypatch.setattr(
         engine,
         "compile_source_file",
-        lambda *_args: CompileResult(
-            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
-        ),
+        lambda *_args: CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}),
     )
     monkeypatch.setattr(
         engine,
@@ -747,9 +733,7 @@ def test_artifact_change_waivers_are_narrow_and_reported(
     monkeypatch.setattr(
         engine,
         "compile_source_file",
-        lambda *_args: CompileResult(
-            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
-        ),
+        lambda *_args: CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}),
     )
     monkeypatch.setattr(
         engine,
@@ -775,9 +759,7 @@ def test_artifact_change_waivers_are_narrow_and_reported(
     ]
 
 
-def test_artifact_waiver_does_not_cover_other_diff_classes(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_artifact_waiver_does_not_cover_other_diff_classes(tmp_path: Path, monkeypatch) -> None:
     contract = tmp_path / "multiple-diffs.vy"
     original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
     contract.write_text(original, encoding="utf-8")
@@ -785,9 +767,7 @@ def test_artifact_waiver_does_not_cover_other_diff_classes(
     monkeypatch.setattr(
         engine,
         "compile_source_file",
-        lambda *_args: CompileResult(
-            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
-        ),
+        lambda *_args: CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}),
     )
     monkeypatch.setattr(
         engine,
@@ -886,9 +866,7 @@ def test_missing_target_artifact_is_not_waived_by_source_or_diff_flags(
     monkeypatch.setattr(
         engine,
         "compile_target_source",
-        lambda *_args: CompileResult(
-            "passed", artifacts={"abi": [], "method_identifiers": {}}
-        ),
+        lambda *_args: CompileResult("passed", artifacts={"abi": [], "method_identifiers": {}}),
     )
 
     code = main(
@@ -1037,6 +1015,8 @@ interface Token:
         blocker["path"] == str(tmp_path / "Token.vyi")
         for blocker in data["validation_decision"]["blockers"]
     )
+
+
 def test_split_interfaces_rejects_existing_generated_file_collision(
     tmp_path: Path, passing_compiler
 ) -> None:
@@ -1085,9 +1065,7 @@ interface Token:
         originals[path] = source
     report = tmp_path / "report.json"
 
-    code = main(
-        [str(tmp_path), "--write", "--split-interfaces", "--report-json", str(report)]
-    )
+    code = main([str(tmp_path), "--write", "--split-interfaces", "--report-json", str(report)])
 
     assert code == 9
     assert not (tmp_path / "Token.vyi").exists()
@@ -1135,10 +1113,7 @@ def balanceOf(owner: address) -> uint256: ...
     ]
     assert len(token_reports) == 2
     assert all(item["changed"] is False for item in token_reports)
-    assert all(
-        item["original_sha256"] == item["candidate_sha256"]
-        for item in token_reports
-    )
+    assert all(item["original_sha256"] == item["candidate_sha256"] for item in token_reports)
 
 
 def test_split_interfaces_respects_rule_ignore(tmp_path: Path, passing_compiler) -> None:
@@ -1431,12 +1406,8 @@ def _write_dependency_cli_fixture(
     return project, dependency, search_path, json_dependency
 
 
-def test_include_dependencies_reports_dependency_roles(
-    tmp_path: Path, passing_compiler
-) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_include_dependencies_reports_dependency_roles(tmp_path: Path, passing_compiler) -> None:
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     closure_report = tmp_path / "closure.json"
     project_report = tmp_path / "project.json"
 
@@ -1475,9 +1446,7 @@ def test_include_dependencies_reports_dependency_roles(
 def test_include_dependencies_write_without_destination_exits_4(
     tmp_path: Path, passing_compiler
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     project_original = project.read_bytes()
     dependency_original = dependency.read_bytes()
 
@@ -1499,9 +1468,7 @@ def test_include_dependencies_write_without_destination_exits_4(
 def test_include_dependencies_never_plans_dependency_writes(
     tmp_path: Path, passing_compiler, capsys
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     project_original = project.read_bytes()
     dependency_original = dependency.read_bytes()
     config = Config(
@@ -1509,9 +1476,7 @@ def test_include_dependencies_never_plans_dependency_writes(
         compiler_search_paths=(search_path,),
         include_dependencies=True,
     )
-    project_request = engine.bounded_migration_request(
-        project, project.read_text(), config
-    )
+    project_request = engine.bounded_migration_request(project, project.read_text(), config)
     dependency_requests, _closure = cli._dependency_requests([project_request], config)
     batch = engine.prepare_migrations([project_request, *dependency_requests], config)
 
@@ -1547,9 +1512,7 @@ def test_include_dependencies_never_plans_dependency_writes(
 def test_include_dependencies_check_exits_1_on_dep_only_change(
     tmp_path: Path, passing_compiler
 ) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
 
     code = main(
         [
@@ -1567,9 +1530,7 @@ def test_include_dependencies_check_exits_1_on_dep_only_change(
 def test_include_dependencies_diff_covers_dependencies(
     tmp_path: Path, passing_compiler, capsys
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
 
     code = main(
         [
@@ -1587,12 +1548,8 @@ def test_include_dependencies_diff_covers_dependencies(
     assert f"+++ {dependency.resolve()}" in output
 
 
-def test_upgrade_closure_alias_and_pyproject_key(
-    tmp_path: Path, passing_compiler
-) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_upgrade_closure_alias_and_pyproject_key(tmp_path: Path, passing_compiler) -> None:
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     alias_report = tmp_path / "alias.json"
     config_report = tmp_path / "config.json"
     config_output = tmp_path / "config-output"
@@ -1632,9 +1589,7 @@ def test_upgrade_closure_alias_and_pyproject_key(
 def test_dependency_source_version_inferred_from_dep_pragma(
     tmp_path: Path, passing_compiler
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     report = tmp_path / "report.json"
 
     code = main(
@@ -1655,9 +1610,7 @@ def test_dependency_source_version_inferred_from_dep_pragma(
     assert files[dependency.resolve()]["validation"]["source_version"] == "0.3.10"
 
 
-def test_overlay_layout_conflict_exits_4(
-    tmp_path: Path, passing_compiler, capsys
-) -> None:
+def test_overlay_layout_conflict_exits_4(tmp_path: Path, passing_compiler, capsys) -> None:
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
     first = first_root / "pkg" / "util.vy"
@@ -1677,9 +1630,9 @@ def test_overlay_layout_conflict_exits_4(
     assert str(second.resolve()) in stderr
 
 
-def test_report_json_schema_v2(tmp_path: Path, passing_compiler) -> None:
-    project, dependency, search_path, json_dependency = (
-        _write_dependency_cli_fixture(tmp_path, include_json=True)
+def test_report_json_schema_v4(tmp_path: Path, passing_compiler) -> None:
+    project, dependency, search_path, json_dependency = _write_dependency_cli_fixture(
+        tmp_path, include_json=True
     )
     assert json_dependency is not None
     project_report = tmp_path / "project.json"
@@ -1709,15 +1662,29 @@ def test_report_json_schema_v2(tmp_path: Path, passing_compiler) -> None:
     assert closure_code == 0
     project_data = json.loads(project_report.read_text())
     closure_data = json.loads(closure_report.read_text())
-    assert project_data["schema_version"] == 2
+    assert project_data["schema_version"] == 4
+    assert project_data["producer"]["name"] == "vyupgrade"
+    assert project_data["producer"]["version"]
     assert project_data["closure"] is None
     assert all(file["role"] == "project" for file in project_data["files"])
-    assert closure_data["schema_version"] == 2
+    source_attestation = project_data["files"][0]["validation"]["source_attestation"]
+    assert {
+        "declared_spec",
+        "authority_rule",
+        "resolved_compiler",
+        "dependency_context",
+        "compiler_started",
+        "completion_status",
+        "exit_status",
+        "validated_source_set",
+        "attempt_sequence",
+        "failure_origin",
+        "compiler_output",
+    } == source_attestation.keys()
+    assert closure_data["schema_version"] == 4
     assert closure_data["closure"] == {
         "requested": True,
-        "dependencies": sorted(
-            [str(dependency.resolve()), str(json_dependency.resolve())]
-        ),
+        "dependencies": sorted([str(dependency.resolve()), str(json_dependency.resolve())]),
         "output_dir": None,
         "output_status": "skipped",
         "output_error": None,
@@ -1760,9 +1727,7 @@ def test_include_dependencies_empty_project_reports_requested_closure(
     }
 
 
-def test_closure_output_requires_include_dependencies_exit_4(
-    tmp_path: Path, capsys
-) -> None:
+def test_closure_output_requires_include_dependencies_exit_4(tmp_path: Path, capsys) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text("#pragma version 0.4.3\n")
 
@@ -1793,16 +1758,9 @@ def test_check_with_closure_output_exit_4(tmp_path: Path, capsys) -> None:
 def test_write_include_dependencies_with_closure_output_commits_both(
     tmp_path: Path, passing_compiler
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     project.write_text(
-        "# @version 0.3.10\n"
-        "from depkg import mod\n"
-        "\n"
-        "@external\n"
-        "def __init__():\n"
-        "    pass\n"
+        "# @version 0.3.10\nfrom depkg import mod\n\n@external\ndef __init__():\n    pass\n"
     )
     dependency_original = dependency.read_bytes()
     output = tmp_path / "output"
@@ -1823,9 +1781,7 @@ def test_write_include_dependencies_with_closure_output_commits_both(
     assert "#pragma version 0.4.3" in project.read_text()
     assert "@deploy\ndef __init__" in project.read_text()
     assert (output / "main.vy").read_bytes() == project.read_bytes()
-    assert "#pragma version 0.4.3" in (
-        output / "depkg" / "mod.vy"
-    ).read_text()
+    assert "#pragma version 0.4.3" in (output / "depkg" / "mod.vy").read_text()
     assert dependency.read_bytes() == dependency_original
     assert not (search_path / "main.vy").exists()
 
@@ -1833,9 +1789,7 @@ def test_write_include_dependencies_with_closure_output_commits_both(
 def test_closure_output_blocked_when_validation_blocks(
     tmp_path: Path, failing_target_compiler
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "output"
     output.mkdir()
     marker = output / "keep.txt"
@@ -1918,12 +1872,8 @@ def test_closure_output_blocks_skipped_hard_boundary_sources(
     )
 
 
-def test_closure_output_failure_exits_9(
-    tmp_path: Path, passing_compiler
-) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_closure_output_failure_exits_9(tmp_path: Path, passing_compiler) -> None:
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "not-a-directory"
     output.write_text("existing file")
     report = tmp_path / "report.json"
@@ -1944,18 +1894,12 @@ def test_closure_output_failure_exits_9(
     assert code == 9
     closure_report = json.loads(report.read_text())["closure"]
     assert closure_report["output_status"] == "failed"
-    assert closure_report["output_error"] == (
-        "closure output destination is not a directory"
-    )
+    assert closure_report["output_error"] == ("closure output destination is not a directory")
     assert output.read_text() == "existing file"
 
 
-def test_report_json_closure_output_fields(
-    tmp_path: Path, passing_compiler, capsys
-) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_report_json_closure_output_fields(tmp_path: Path, passing_compiler, capsys) -> None:
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "output"
     report = tmp_path / "report.json"
 
@@ -1978,15 +1922,10 @@ def test_report_json_closure_output_fields(
     assert closure_report["output_status"] == "written"
     assert closure_report["output_error"] is None
     assert (output / "depkg" / "mod.vy").read_text() != dependency.read_text()
-    assert (
-        f"closure output: {output.resolve()} (written)"
-        in capsys.readouterr().out
-    )
+    assert f"closure output: {output.resolve()} (written)" in capsys.readouterr().out
 
 
-def test_closure_output_blocked_when_plan_build_fails(
-    tmp_path: Path, passing_compiler
-) -> None:
+def test_closure_output_blocked_when_plan_build_fails(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Main.vy"
     contract.write_text(
         "#pragma version 0.4.3\n"
@@ -2049,19 +1988,14 @@ def test_empty_project_closure_output_is_written_without_directory(
     assert closure_report["output_error"] is None
 
 
-def test_closure_archive_requires_include_dependencies_exit_4(
-    tmp_path: Path, capsys
-) -> None:
+def test_closure_archive_requires_include_dependencies_exit_4(tmp_path: Path, capsys) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text("#pragma version 0.4.3\n")
 
     code = main([str(contract), "--closure-archive", str(tmp_path / "out.vyz")])
 
     assert code == 4
-    assert (
-        "--closure-archive requires --include-dependencies"
-        in capsys.readouterr().err
-    )
+    assert "--closure-archive requires --include-dependencies" in capsys.readouterr().err
 
 
 def test_check_with_closure_archive_exit_4(tmp_path: Path, capsys) -> None:
@@ -2079,10 +2013,7 @@ def test_check_with_closure_archive_exit_4(tmp_path: Path, capsys) -> None:
     )
 
     assert code == 4
-    assert (
-        "--check cannot be combined with --closure-archive"
-        in capsys.readouterr().err
-    )
+    assert "--check cannot be combined with --closure-archive" in capsys.readouterr().err
 
 
 def test_closure_archive_target_below_floor_exits_4_before_compiling(
@@ -2114,14 +2045,11 @@ def test_closure_archive_target_below_floor_exits_4_before_compiling(
     assert code == 4
     assert compile_calls == 0
     assert (
-        "target 0.3.10 predates Vyper archive output (requires >= 0.4.0)"
-        in capsys.readouterr().err
+        "target 0.3.10 predates Vyper archive output (requires >= 0.4.0)" in capsys.readouterr().err
     )
 
 
-def test_closure_archive_requires_single_entry_exit_4(
-    tmp_path: Path, capsys
-) -> None:
+def test_closure_archive_requires_single_entry_exit_4(tmp_path: Path, capsys) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / "first.vy").write_text("#pragma version 0.4.3\n")
@@ -2137,10 +2065,7 @@ def test_closure_archive_requires_single_entry_exit_4(
     )
 
     assert code == 4
-    assert (
-        "--closure-archive requires exactly one entry contract; got 2"
-        in capsys.readouterr().err
-    )
+    assert "--closure-archive requires exactly one entry contract; got 2" in capsys.readouterr().err
 
 
 def test_closure_archive_rejects_entry_destination_without_mutation(
@@ -2154,9 +2079,7 @@ def test_closure_archive_rejects_entry_destination_without_mutation(
     def unexpected_compile(*_args, **_kwargs):
         pytest.fail("entry destination must be rejected before archive compilation")
 
-    monkeypatch.setattr(
-        cli.closure.compiler, "compile_target_archive", unexpected_compile
-    )
+    monkeypatch.setattr(cli.closure.compiler, "compile_target_archive", unexpected_compile)
 
     code = main(
         [
@@ -2178,12 +2101,8 @@ def test_closure_archive_rejects_entry_destination_without_mutation(
     )
 
 
-def test_closure_archive_failure_exits_9(
-    tmp_path: Path, passing_compiler, monkeypatch
-) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_closure_archive_failure_exits_9(tmp_path: Path, passing_compiler, monkeypatch) -> None:
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "out.vyz"
     report = tmp_path / "report.json"
 
@@ -2193,9 +2112,7 @@ def test_closure_archive_failure_exits_9(
         _sources: dict[Path, str],
         _config: Config,
     ) -> cli.closure.ClosureWriteResult:
-        return cli.closure.ClosureWriteResult(
-            "failed", output.resolve(), (), "archive failed"
-        )
+        return cli.closure.ClosureWriteResult("failed", output.resolve(), (), "archive failed")
 
     monkeypatch.setattr(cli.closure, "write_closure_archive", fail_archive)
 
@@ -2222,9 +2139,7 @@ def test_closure_archive_failure_exits_9(
 def test_report_json_closure_archive_fields(
     tmp_path: Path, passing_compiler, monkeypatch, capsys
 ) -> None:
-    project, dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "out.vyz"
     report = tmp_path / "report.json"
 
@@ -2237,9 +2152,7 @@ def test_report_json_closure_archive_fields(
         assert entry == project.resolve()
         assert dependency.resolve() in sources
         archive.write_bytes(b"archive")
-        return cli.closure.ClosureWriteResult(
-            "written", archive.resolve(), (archive.resolve(),)
-        )
+        return cli.closure.ClosureWriteResult("written", archive.resolve(), (archive.resolve(),))
 
     monkeypatch.setattr(cli.closure, "write_closure_archive", write_archive)
 
@@ -2261,18 +2174,11 @@ def test_report_json_closure_archive_fields(
     assert closure_report["archive"] == str(output.resolve())
     assert closure_report["archive_status"] == "written"
     assert closure_report["archive_error"] is None
-    assert (
-        f"closure archive: {output.resolve()} (written)"
-        in capsys.readouterr().out
-    )
+    assert f"closure archive: {output.resolve()} (written)" in capsys.readouterr().out
 
 
-def test_closure_output_and_archive_combine(
-    tmp_path: Path, passing_compiler, monkeypatch
-) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_closure_output_and_archive_combine(tmp_path: Path, passing_compiler, monkeypatch) -> None:
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     output = tmp_path / "output"
     archive = tmp_path / "out.vyz"
     report = tmp_path / "report.json"
@@ -2313,12 +2219,8 @@ def test_closure_output_and_archive_combine(
     assert closure_report["archive_status"] == "written"
 
 
-def test_closure_archive_pyproject_key(
-    tmp_path: Path, passing_compiler, monkeypatch
-) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+def test_closure_archive_pyproject_key(tmp_path: Path, passing_compiler, monkeypatch) -> None:
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     archive = tmp_path / "configured.vyz"
     report = tmp_path / "configured.json"
     pyproject = tmp_path / "pyproject.toml"
@@ -2338,9 +2240,7 @@ def test_closure_archive_pyproject_key(
         _config: Config,
     ) -> cli.closure.ClosureWriteResult:
         output.write_bytes(b"archive")
-        return cli.closure.ClosureWriteResult(
-            "written", output.resolve(), (output.resolve(),)
-        )
+        return cli.closure.ClosureWriteResult("written", output.resolve(), (output.resolve(),))
 
     monkeypatch.setattr(cli.closure, "write_closure_archive", write_archive)
 
@@ -2354,9 +2254,7 @@ def test_closure_archive_pyproject_key(
 def test_closure_archive_blocked_when_validation_blocks(
     tmp_path: Path, failing_target_compiler, monkeypatch
 ) -> None:
-    project, _dependency, search_path, _json_dependency = (
-        _write_dependency_cli_fixture(tmp_path)
-    )
+    project, _dependency, search_path, _json_dependency = _write_dependency_cli_fixture(tmp_path)
     archive = tmp_path / "blocked.vyz"
     report = tmp_path / "blocked.json"
 

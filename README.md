@@ -53,9 +53,12 @@ Paths may be files or directories; directories are searched recursively for
 `#pragma version` (or legacy `# @version`) line. Pass `--source-version` to
 override the inference for files that have no pragma.
 
-For broad source pragmas, rule gating uses the oldest satisfying compiler so
-historical migrations still run, while source validation uses the newest
-satisfying compiler no newer than the requested target.
+Rule gating for broad source pragmas uses the oldest satisfying compiler so
+historical migrations still run. Unless `--source-vyper` overrides discovery,
+source-validation authority is the nearest project's declared Vyper resolution
+(including its lock), then an exact pragma, then the newest known compiler that
+satisfies a ranged pragma without exceeding the requested target. Ranged
+selection never inspects source syntax.
 
 ### How it validates
 
@@ -67,12 +70,13 @@ available, and ABI, method identifiers, and storage layout compare equal. This
 write decision is independent of diagnostic selection and rule version gating.
 Standalone `.vyi` inputs are target-compiled through a generated import harness.
 
-Compiler subprocesses run through the bundled `uv`, using
-`uv run --no-project --with vyper==<version>` so each side gets the exact
-compiler it needs instead of inheriting an incompatible interpreter. When a file
-belongs to another project, the nearest `pyproject.toml` is read and any
-declared packages matching its Vyper imports (such as `snekmate`) are added to
-the compiler environment.
+Compiler subprocesses run through the bundled `uv`. Files in a project use the
+complete nearest declared environment via `uv run --isolated --project`,
+including all dependency groups and extras; an existing `uv.lock` is enforced
+with `--frozen`. An unlocked project is mirrored into a temporary root so
+resolution cannot create a lockfile in the source tree. Files without a project
+use an isolated `uv run --no-project --with vyper==<version>` environment.
+Dependencies are never guessed from imports or compiler errors.
 
 For `0.1.0b*` source compilers, `vyupgrade` runs the compiler through a
 `typed-ast` compatibility wrapper so the legacy compiler sees pre-Python-3.8
@@ -98,11 +102,10 @@ Reports distinguish original, validated candidate, and final on-disk hashes. If 
 post-write test command changes a planned file, the run exits nonzero and records the
 drift.
 
-Dependency inference is intentionally conservative. Exact requirements,
-ordinary version ranges, and Git dependencies are supported. Project-specific
-specifier syntaxes that cannot be translated to a compiler environment, such as
-Poetry caret requirements, are skipped; use `--compiler-search-paths`,
-`--source-vyper`, or `--target-vyper` for unusual layouts.
+Source-validation evidence records the declared spec, actual resolved compiler,
+dependency context, whether the compiler started, a typed failure origin, and
+the compiler process output. `compiler_output` contains only compiler stdout and
+stderr; environment-manager or adapter diagnostics remain separate.
 
 ## Options
 
@@ -130,11 +133,16 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `2` adds a per-file
-`role` and a top-level `closure` object; version `1` consumers must not assume
-their absence. Consumers should treat a missing version as the legacy
-unversioned format and require a new schema version before relying on renamed,
-removed, or type-changed fields.
+JSON reports include a top-level `schema_version`. Version `4` provides producer
+identity plus separate source and target validation attestations. Each
+attestation records the declared source snapshot and compiler declarations,
+compiler authority and identity, dependency context, process completion and
+exit status, validated sources, the exact compile attempt, typed failure origin,
+and compiler output when validation fails. Version `2` added a per-file `role`
+and a top-level `closure` object; version `3` first introduced source-validation
+evidence and is superseded by version `4`. Consumers should treat a missing
+version as the legacy unversioned format and require a new schema version before
+relying on renamed, removed, or type-changed fields.
 
 ### Configuration
 
