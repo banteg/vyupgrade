@@ -336,7 +336,10 @@ def _compiler_coherence_error(version: str, raw_evidence: str) -> str | None:
         or not all(isinstance(candidate, str) for candidate in versions)
     ):
         return "compiler coherence evidence is malformed"
-    if version in versions:
+    # Vyper release executables report versions such as
+    # ``0.4.1+commit.8a93dd27`` while pragmas name the public ``0.4.1`` release.
+    public_version = version.partition("+")[0]
+    if public_version in {candidate.partition("+")[0] for candidate in versions}:
         return None
     return f"resolved project compiler {version} conflicts with source declaration {declaration}"
 

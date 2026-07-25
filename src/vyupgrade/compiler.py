@@ -2043,11 +2043,9 @@ def _command_vyper_version(command: list[str]) -> str | None:
 
 
 def _compiler_coherence(source_spec: str | None) -> str:
-    versions = (
-        [str(version) for version in known_versions_satisfying(source_spec)]
-        if source_spec is not None
-        else []
-    )
+    if source_spec is None:
+        return ""
+    versions = [str(version) for version in known_versions_satisfying(source_spec)]
     return json.dumps(
         {"declaration": source_spec, "versions": versions},
         sort_keys=True,
