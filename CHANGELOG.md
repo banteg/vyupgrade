@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed declared-project source validation for explicit Vyper executables that
+  report commit build metadata and for sources without version pragmas.
+
 ## 0.6.1 - 2026-07-25
 
 - Made source validation use the nearest declared project environment and

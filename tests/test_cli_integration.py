@@ -1214,6 +1214,58 @@ dependencies = ["vyper==0.4.3"]
         str(contract),
     ]
 
+
+@pytest.mark.parametrize(
+    ("source", "source_version", "resolved_version"),
+    [
+        ("# pragma version 0.4.1\n", "0.4.1", "0.4.1+commit.8a93dd27"),
+        ("value: public(uint256)\n", None, "0.4.1"),
+    ],
+    ids=["local-build-metadata", "missing-pragma"],
+)
+def test_real_explicit_project_compiler_accepts_coherent_source(
+    tmp_path: Path,
+    source: str,
+    source_version: str | None,
+    resolved_version: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "explicit-source-coherence"
+version = "0.1.0"
+dependencies = ["vyper==0.4.1"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text(source, encoding="utf-8")
+    executable = _write_test_compiler(
+        tmp_path,
+        """print("[]")
+print("{}")
+print("{}")
+print('{"ast_type": "Module", "body": []}')
+""",
+        version=resolved_version,
+    )
+
+    result = compile_source_file(
+        contract,
+        Config(
+            paths=(contract,),
+            target_version="0.4.3",
+            source_vyper=str(executable),
+        ),
+        source_version,
+    )
+
+    assert result.status == "passed"
+    assert result.resolved_compiler == resolved_version
+    assert result.compiler_authority == "explicit-executable"
+
+
 def test_real_compiler_overlay_uses_project_interpreter(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1873,14 +1925,19 @@ def _write_managed_vyper_environment(
     return site, bin_dir
 
 
-def _write_test_compiler(tmp_path: Path, compile_body: str) -> Path:
+def _write_test_compiler(
+    tmp_path: Path,
+    compile_body: str,
+    *,
+    version: str = "0.4.1",
+) -> Path:
     executable = tmp_path / "test-vyper"
     executable.write_text(
         f"""#!/usr/bin/env python3
 import sys
 
 if "--version" in sys.argv:
-    print("0.4.1")
+    print({version!r})
     raise SystemExit
 
 {compile_body}

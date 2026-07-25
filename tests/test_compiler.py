@@ -12,6 +12,7 @@ from vyupgrade.compiler import (
     TargetOverlay,
     _CompilerProcess,
     _declared_project_environment,
+    _compiler_coherence,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
@@ -29,6 +30,7 @@ from vyupgrade.compiler import (
     target_overlay,
     unavailable_validation_artifacts,
 )
+from vyupgrade.compiler_runner import _compiler_coherence_error
 from vyupgrade.models import Config, ContentIdentity, DependencyContext, FailureOrigin
 from vyupgrade.versions import KNOWN_VERSIONS, parse_version
 
@@ -69,6 +71,26 @@ def test_compiler_command_uses_packaged_uv_bin(monkeypatch) -> None:
     monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
 
     assert _compiler_command(None, "0.3.7", None)[0] == "/tmp/uv"
+
+
+def test_compiler_coherence_skips_missing_source_declaration() -> None:
+    assert _compiler_coherence(None) == ""
+
+
+def test_compiler_coherence_accepts_local_build_metadata() -> None:
+    evidence = '{"declaration":"0.4.1","versions":["0.4.1"]}'
+
+    assert _compiler_coherence_error("0.4.1+commit.8a93dd27", evidence) is None
+
+
+def test_compiler_coherence_rejects_genuine_version_mismatch() -> None:
+    evidence = '{"declaration":"0.4.1","versions":["0.4.1"]}'
+
+    assert (
+        _compiler_coherence_error("0.4.2+commit.c4227f2", evidence)
+        == "resolved project compiler 0.4.2+commit.c4227f2 "
+        "conflicts with source declaration 0.4.1"
+    )
 
 
 def test_compiler_command_pins_python_for_uv(monkeypatch) -> None:
