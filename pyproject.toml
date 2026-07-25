@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "vyupgrade"
-version = "0.6.1"
+version = "0.6.2"
 description = "Compiler-backed tool for upgrading Vyper contracts."
 readme = "README.md"
 requires-python = ">=3.11"
