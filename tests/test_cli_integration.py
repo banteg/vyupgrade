@@ -1006,7 +1006,7 @@ def decimals() -> uint8:
 
     report_data = json.loads(report.read_text(encoding="utf-8"))
     assert report_data["schema_version"] == 4
-    assert report_data["producer"] == {"name": "vyupgrade", "version": "0.6.0"}
+    assert report_data["producer"] == {"name": "vyupgrade", "version": "0.6.1"}
     validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]
     declarations = attestation["declared_spec"]["compiler_declarations"]
