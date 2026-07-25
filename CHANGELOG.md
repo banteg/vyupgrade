@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-25
+
 - Added opt-in `--strip-pragma` output that removes version pragmas from
   migrated source without changing target compiler selection or validation.
-- Analyze upgraded dependency modules with compiler-annotated ASTs, validate
-  them through their consumer contracts instead of as standalone contracts,
-  and report that consumer-root evidence explicitly in JSON schema v5.
+- Added compiler-annotated AST analysis for upgraded dependency modules,
+  validating them through their consumer contracts instead of as standalone
+  contracts and reporting that consumer-root evidence explicitly in JSON
+  schema v5.
 
 ## 0.6.2 - 2026-07-25
 

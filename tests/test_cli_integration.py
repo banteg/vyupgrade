@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from uv import find_uv_bin
 
+from vyupgrade import __version__
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
@@ -1156,7 +1157,7 @@ def decimals() -> uint8:
 
     report_data = json.loads(report.read_text(encoding="utf-8"))
     assert report_data["schema_version"] == 5
-    assert report_data["producer"] == {"name": "vyupgrade", "version": "0.6.2"}
+    assert report_data["producer"] == {"name": "vyupgrade", "version": __version__}
     validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]
     declarations = attestation["declared_spec"]["compiler_declarations"]
