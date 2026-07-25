@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import sys
 import tomllib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
@@ -159,6 +159,7 @@ class TargetOverlay:
 class ImportClosure:
     roots: tuple[Path, ...]
     dependencies: tuple[Path, ...]
+    consumers: Mapping[Path, tuple[Path, ...]]
     source_roots: tuple[Path, ...]
     common_root: Path
 
@@ -496,9 +497,24 @@ def resolve_import_closure(
         )
         if not is_override
     ]
+    dependency_paths = set(dependencies)
+    consumers: dict[Path, list[Path]] = {path: [] for path in dependency_paths}
+    for root in sorted(resolved_sources):
+        for path, _source, _relative_path, is_override in _walk_validation_closure(
+            source_roots,
+            import_roots,
+            common_root,
+            resolved_sources,
+            entry_paths=(root,),
+        ):
+            if not is_override and path in dependency_paths:
+                consumers[path].append(root)
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
         dependencies=tuple(sorted(dict.fromkeys(dependencies))),
+        consumers={
+            path: tuple(sorted(dict.fromkeys(paths))) for path, paths in sorted(consumers.items())
+        },
         source_roots=source_roots,
         common_root=common_root,
     )
@@ -748,28 +764,38 @@ def _walk_validation_closure(
     import_roots: tuple[Path, ...],
     common_root: Path,
     overrides: Mapping[Path, str],
+    *,
+    entry_paths: Iterable[Path] | None = None,
 ) -> Iterator[tuple[Path, str, Path, bool]]:
     override_paths = set(overrides)
-    incoming_overrides: set[Path] = set()
-    for path, source in overrides.items():
-        import_source = _standard_json_package_dependency_source(path, source, common_root)
-        for source_root in _containing_import_roots(path, source_roots):
-            relative_path = path.relative_to(source_root)
-            incoming_overrides.update(
-                imported.path
-                for imported in _validation_import_sources(
-                    path,
-                    import_source,
-                    source_root,
-                    import_roots,
-                    relative_path,
+    if entry_paths is None:
+        incoming_overrides: set[Path] = set()
+        for path, source in overrides.items():
+            import_source = _standard_json_package_dependency_source(path, source, common_root)
+            for source_root in _containing_import_roots(path, source_roots):
+                relative_path = path.relative_to(source_root)
+                incoming_overrides.update(
+                    imported.path
+                    for imported in _validation_import_sources(
+                        path,
+                        import_source,
+                        source_root,
+                        import_roots,
+                        relative_path,
+                    )
+                    if imported.path in override_paths
                 )
-                if imported.path in override_paths
-            )
+        initial_paths = override_paths - incoming_overrides
+        include_disconnected_overrides = True
+    else:
+        initial_paths = {path.resolve() for path in entry_paths}
+        if not initial_paths <= override_paths:
+            missing = ", ".join(str(path) for path in sorted(initial_paths - override_paths))
+            raise ValueError(f"closure entry paths are not source overrides: {missing}")
+        include_disconnected_overrides = False
 
-    entry_paths = override_paths - incoming_overrides
     queue: list[tuple[Path, str, Path, Path, bool]] = []
-    for path in sorted(entry_paths):
+    for path in sorted(initial_paths):
         source_root = _containing_import_roots(path, source_roots)[0]
         queue.append(
             (
@@ -782,7 +808,7 @@ def _walk_validation_closure(
         )
     layouts: dict[Path, Path] = {}
     processed: set[Path] = set()
-    while queue or override_paths - processed:
+    while queue or (include_disconnected_overrides and override_paths - processed):
         if not queue:
             path = min(override_paths - processed)
             source_root = _containing_import_roots(path, source_roots)[0]
@@ -1229,6 +1255,7 @@ def _copy_project_configs(
 
 
 def compile_source_ast(path: Path, config: Config, source_version: str | None) -> CompileResult:
+    """Load rewrite facts without requiring a module to be a deployable entry point."""
     if path.suffix != ".vy":
         return CompileResult("skipped")
     command, suppress_warnings = _prepare_command(
@@ -1236,16 +1263,23 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         source_version or infer_pragma(path.read_text()),
         config.source_python,
     )
-    return _run_compile_with_formats(
-        command,
-        path,
-        config,
-        ("ast",),
-        (),
-        suppress_warnings,
-        allow_unsupported_formats=True,
-        project_compiler=True,
-    )
+    result: CompileResult | None = None
+    for output_format in ("annotated_ast", "ast"):
+        result = _run_compile_with_formats(
+            command,
+            path,
+            config,
+            (output_format,),
+            (),
+            suppress_warnings,
+            allow_unsupported_formats=True,
+            project_compiler=True,
+        )
+        artifact = (result.artifacts or {}).get(output_format)
+        if result.status == "passed" and isinstance(artifact, dict):
+            return replace(result, artifacts={"ast": artifact})
+    assert result is not None
+    return result
 
 
 def compare_artifacts(

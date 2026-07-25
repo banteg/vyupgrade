@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 
 from .models import (
     Config,
@@ -14,9 +15,19 @@ from .models import (
 def decide_run_validation(
     reports: Iterable[FileReport], config: Config
 ) -> ValidationDecision:
+    report_list = tuple(reports)
+    reports_by_path = {report.path.resolve(): report for report in report_list}
     decisions: list[ValidationDecision] = []
-    for report in reports:
+    for report in report_list:
+        if report.validation_mode != "direct":
+            continue
         decision = decide_file_validation(report, config)
+        report.validation_decision = decision
+        decisions.append(decision)
+    for report in report_list:
+        if report.validation_mode != "consumer-roots":
+            continue
+        decision = _decide_consumer_root_validation(report, reports_by_path)
         report.validation_decision = decision
         decisions.append(decision)
 
@@ -29,6 +40,67 @@ def decide_run_validation(
     if any(decision.status != "not-required" for decision in decisions):
         return ValidationDecision("passed", True)
     return ValidationDecision()
+
+
+def _decide_consumer_root_validation(
+    report: FileReport,
+    reports_by_path: dict[Path, FileReport],
+) -> ValidationDecision:
+    consumer_paths = tuple(path.resolve() for path in report.consumer_roots)
+    missing = tuple(path for path in consumer_paths if path not in reports_by_path)
+    if not consumer_paths or missing:
+        detail = (
+            "no consumer roots were resolved"
+            if not consumer_paths
+            else "consumer root reports are unavailable: " + ", ".join(str(path) for path in missing)
+        )
+        issue = ValidationIssue(
+            "consumer_roots_unavailable",
+            f"dependency validation cannot be attributed because {detail}",
+            report.path,
+        )
+        return ValidationDecision("blocked", False, (issue,))
+
+    consumers = tuple(reports_by_path[path] for path in consumer_paths)
+    report.source_compile = _aggregate_compile_status(
+        consumer.source_compile for consumer in consumers
+    )
+    report.target_compile = _aggregate_compile_status(
+        consumer.target_compile for consumer in consumers
+    )
+    compilers = {consumer.source_compiler for consumer in consumers}
+    report.source_compiler = compilers.pop() if len(compilers) == 1 else None
+    report.source_error = None
+    report.target_error = None
+    report.source_attestation = None
+    report.target_attestation = None
+    report.source_unavailable_artifacts.clear()
+    report.target_unavailable_artifacts.clear()
+    report.source_unavailable_formats.clear()
+    report.target_unavailable_formats.clear()
+    report.abi_equal = None
+    report.method_ids_equal = None
+    report.storage_layout_equal = None
+    report.abi_diff.clear()
+    report.method_id_diff.clear()
+    report.storage_layout_diff.clear()
+
+    decisions = tuple(consumer.validation_decision for consumer in consumers)
+    if any(decision.status == "blocked" for decision in decisions):
+        return ValidationDecision("blocked", False)
+    if any(decision.status == "waived" for decision in decisions):
+        return ValidationDecision("waived", True)
+    if any(decision.status == "passed" for decision in decisions):
+        return ValidationDecision("passed", True)
+    return ValidationDecision()
+
+
+def _aggregate_compile_status(statuses: Iterable[str]) -> str:
+    status_set = set(statuses)
+    for status in ("failed", "degraded", "passed"):
+        if status in status_set:
+            return status
+    return "skipped"
 
 
 def decide_file_validation(report: FileReport, config: Config) -> ValidationDecision:
@@ -130,6 +202,7 @@ def validation_exit_code(decision: ValidationDecision) -> int | None:
     if codes & {"target_compile_failed", "target_artifacts_unavailable"}:
         return 2
     if codes & {
+        "consumer_roots_unavailable",
         "source_compile_failed",
         "source_artifacts_unavailable",
         "artifact_comparison_unavailable",

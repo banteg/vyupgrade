@@ -625,7 +625,7 @@ def test_compile_preserves_typed_timeout_failure(monkeypatch) -> None:
     assert result.compiler_started is True
 
 
-def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
+def test_compile_source_ast_prefers_annotated_ast(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")
     calls: dict[str, object] = {}
@@ -646,7 +646,10 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
         **_kwargs,
     ) -> CompileResult:
         calls["run"] = (command, path, formats, extra_paths, suppress_warnings)
-        return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
+        return CompileResult(
+            "passed",
+            artifacts={"annotated_ast": {"ast": {"ast_type": "Module"}}},
+        )
 
     monkeypatch.setattr("vyupgrade.compiler._compiler_command", fake_compiler_command)
     monkeypatch.setattr(
@@ -656,8 +659,40 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     result = compile_source_ast(contract, Config(paths=(contract,)), None)
 
     assert result.status == "passed"
+    assert result.artifacts == {"ast": {"ast": {"ast_type": "Module"}}}
     assert calls["compiler"] == (None, "0.4.3", None)
-    assert calls["run"] == (["vyper"], contract, ("ast",), (), True)
+    assert calls["run"] == (["vyper"], contract, ("annotated_ast",), (), True)
+
+
+def test_compile_source_ast_falls_back_to_raw_ast(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.4.3\n", encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_compile_with_formats(
+        command: list[str],
+        path: Path,
+        config: Config,
+        formats: tuple[str, ...],
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+        **_kwargs,
+    ) -> CompileResult:
+        calls.append(formats)
+        if formats == ("annotated_ast",):
+            return CompileResult("failed", unavailable_formats=("annotated_ast",))
+        return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
+
+    monkeypatch.setattr("vyupgrade.compiler._prepare_command", lambda *args: (["vyper"], True))
+    monkeypatch.setattr(
+        "vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats
+    )
+
+    result = compile_source_ast(contract, Config(paths=(contract,)), None)
+
+    assert result.status == "passed"
+    assert result.artifacts == {"ast": {"ast_type": "Module"}}
+    assert calls == [("annotated_ast",), ("ast",)]
 
 
 def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, tmp_path) -> None:
@@ -1064,6 +1099,36 @@ def test_resolve_import_closure_lists_transitive_dependencies(tmp_path) -> None:
     assert closure.files == (contract.resolve(), *expected_dependencies)
     assert closure.source_roots == (tmp_path / "project",)
     assert closure.common_root == tmp_path / "project"
+    assert closure.consumers == {
+        dependency: (contract.resolve(),) for dependency in expected_dependencies
+    }
+
+
+def test_resolve_import_closure_tracks_each_dependency_consumer(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    first = project / "first.vy"
+    second = project / "second.vy"
+    shared = project / "shared.vy"
+    first_only = project / "first_only.vy"
+    project.mkdir()
+    first_source = (
+        "#pragma version 0.4.3\nfrom . import shared\nfrom . import first_only\n"
+    )
+    second_source = "#pragma version 0.4.3\nfrom . import shared\n"
+    first.write_text(first_source, encoding="utf-8")
+    second.write_text(second_source, encoding="utf-8")
+    shared.write_text("#pragma version 0.4.3\n", encoding="utf-8")
+    first_only.write_text("#pragma version 0.4.3\n", encoding="utf-8")
+
+    closure = resolve_import_closure(
+        {first: first_source, second: second_source},
+        (project,),
+    )
+
+    assert closure.consumers == {
+        first_only.resolve(): (first.resolve(),),
+        shared.resolve(): (first.resolve(), second.resolve()),
+    }
 
 
 @pytest.mark.parametrize(

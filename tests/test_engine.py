@@ -9,6 +9,7 @@ from vyupgrade import compiler, engine
 from vyupgrade.compiler import CompileResult
 from vyupgrade.engine import MigrationRequest, SourceCompileAttempt
 from vyupgrade.models import Config, Diagnostic, Fix, GeneratedFile, RewriteResult
+from vyupgrade.validation import validation_exit_code
 
 
 VALIDATION_ARTIFACTS = {"abi": [], "method_identifiers": {}, "layout": {}}
@@ -278,6 +279,141 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
     assert decision.status == "passed"
 
 
+def test_dependency_validation_uses_consumer_root_artifacts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "Main.vy"
+    dependency = tmp_path / "Stateful.vy"
+    compiled: list[Path] = []
+
+    def compile_source(path, config, source_version):
+        if path == dependency:
+            return CompileResult("failed", stderr="module requires consumer initialization")
+        return CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
+
+    @contextmanager
+    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False):
+        assert include_dependencies is True
+        yield object()
+
+    def compile_target(path, source, config, overlay):
+        compiled.append(path)
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    dependency_request = MigrationRequest(
+        dependency,
+        "#pragma version 0.3.10\n",
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+        consumer_roots=(root,),
+    )
+    monkeypatch.setattr(engine, "compile_source_file", compile_source)
+    monkeypatch.setattr(engine, "compile_source_ast", compile_source)
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+    monkeypatch.setattr(engine, "target_overlay", overlay)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target)
+    config = _config(tmp_path, include_dependencies=True)
+
+    batch = engine.prepare_migrations((_request(root), dependency_request), config)
+    decision = engine.validate_migrations(batch, config)
+    dependency_report = batch.files[1].report
+
+    assert compiled == [root]
+    assert decision.status == "passed"
+    assert dependency_report.validation_mode == "consumer-roots"
+    assert dependency_report.consumer_roots == (root.resolve(),)
+    assert dependency_report.source_compile == "passed"
+    assert dependency_report.target_compile == "passed"
+    assert dependency_report.source_attestation is None
+    assert dependency_report.target_attestation is None
+    assert dependency_report.validation_decision.status == "passed"
+
+
+def test_dependency_validation_aggregates_multiple_consumer_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    first = tmp_path / "First.vy"
+    second = tmp_path / "Second.vy"
+    dependency = tmp_path / "Shared.vy"
+    compiled: list[Path] = []
+
+    def compile_source(path, config, source_version):
+        if path == dependency:
+            return CompileResult("failed", stderr="module requires a consumer")
+        return CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
+
+    @contextmanager
+    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False):
+        assert include_dependencies is True
+        yield object()
+
+    def compile_target(path, source, config, overlay):
+        compiled.append(path)
+        if path == second:
+            return CompileResult("failed", stderr="second consumer failed")
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    dependency_request = MigrationRequest(
+        dependency,
+        "#pragma version 0.3.10\n",
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+        consumer_roots=(first, second),
+    )
+    monkeypatch.setattr(engine, "compile_source_file", compile_source)
+    monkeypatch.setattr(engine, "compile_source_ast", compile_source)
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+    monkeypatch.setattr(engine, "target_overlay", overlay)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target)
+    config = _config(tmp_path, include_dependencies=True)
+
+    batch = engine.prepare_migrations(
+        (_request(first), _request(second), dependency_request),
+        config,
+    )
+    decision = engine.validate_migrations(batch, config)
+    dependency_report = batch.files[2].report
+
+    assert compiled == [first, second]
+    assert decision.status == "blocked"
+    assert [(issue.code, issue.path) for issue in decision.blockers] == [
+        ("target_compile_failed", second)
+    ]
+    assert dependency_report.source_compile == "passed"
+    assert dependency_report.target_compile == "failed"
+    assert dependency_report.validation_decision.status == "blocked"
+    assert dependency_report.validation_decision.blockers == ()
+
+
+def test_dependency_validation_fails_closed_without_consumer_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dependency = tmp_path / "Orphan.vy"
+    request = MigrationRequest(
+        dependency,
+        "#pragma version 0.3.10\n",
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+    )
+    monkeypatch.setattr(
+        engine,
+        "compile_source_ast",
+        lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
+    )
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+    config = _config(tmp_path, include_dependencies=True)
+
+    batch = engine.prepare_migrations((request,), config)
+    decision = engine.validate_migrations(batch, config)
+
+    assert decision.status == "blocked"
+    assert [issue.code for issue in decision.blockers] == ["consumer_roots_unavailable"]
+    assert validation_exit_code(decision) == 3
+
+
 def test_validation_rejects_duplicate_resolved_destinations(monkeypatch, tmp_path: Path) -> None:
     first = tmp_path / "First.vy"
     second = tmp_path / "Second.vy"
@@ -409,9 +545,14 @@ def test_prepare_migrations_skips_interface_split_for_dependencies(
     )
     monkeypatch.setattr(
         engine,
-        "compile_source_file",
+        "compile_source_ast",
         lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
     )
+
+    def unexpected_full_compile(*_args):
+        raise AssertionError("dependency analysis must not request deployable artifacts")
+
+    monkeypatch.setattr(engine, "compile_source_file", unexpected_full_compile)
     monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
 
     def unexpected_split(*_args):
@@ -447,6 +588,11 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
         "compile_source_file",
         lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
     )
+    monkeypatch.setattr(
+        engine,
+        "compile_source_ast",
+        lambda *_args: CompileResult("passed", artifacts={"ast": {}}),
+    )
 
     def apply(source, config, path):
         rewritten = rewritten_dependency if path == dependency else source
@@ -474,7 +620,7 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
         observed_search_paths[config.include_dependencies] = compiler._overlay_search_paths(
             overlay, config.compiler_search_paths
         )
-        if path == dependency:
+        if config.include_dependencies:
             target = overlay.paths[dependency.resolve()]
             assert target == overlay.root / "depkg" / "mod.vy"
             assert target.read_text() == rewritten_dependency
@@ -552,5 +698,7 @@ def test_dependency_source_final_newline_retry_handles_read_only_directory(
     batch = engine.prepare_migrations((request,), _config(tmp_path))
 
     assert batch.files[0].source_compile is original_failure
-    assert batch.files[0].report.source_compile == "failed"
+    assert batch.files[0].report.validation_mode == "consumer-roots"
+    assert batch.files[0].report.source_compile == "skipped"
+    assert batch.files[0].report.source_attestation is None
     assert set(dependency_directory.iterdir()) == original_entries

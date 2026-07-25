@@ -9,6 +9,7 @@ from .compiler import (
     CompileResult,
     compare_artifact_details,
     compare_artifacts,
+    compile_source_ast,
     compile_source_file,
     compile_target_source,
     target_overlay,
@@ -66,6 +67,7 @@ class MigrationRequest:
     source_attempts: tuple[SourceCompileAttempt, ...]
     skip_target_on_blocked_source: bool = True
     role: str = "project"
+    consumer_roots: tuple[Path, ...] = ()
 
 
 @dataclass
@@ -110,7 +112,12 @@ class MigrationBatch:
 
 
 def bounded_migration_request(
-    path: Path, original: str, config: Config, *, role: str = "project"
+    path: Path,
+    original: str,
+    config: Config,
+    *,
+    role: str = "project",
+    consumer_roots: tuple[Path, ...] = (),
 ) -> MigrationRequest:
     """Build the target-bounded source compiler request used by the CLI."""
     source_version = config.source_version or infer_pragma(original)
@@ -124,7 +131,14 @@ def bounded_migration_request(
             source_version, config.target_version, original
         )
         attempts = (SourceCompileAttempt(compiler, source_version, compiler),)
-    return MigrationRequest(path, original, source_version, attempts, role=role)
+    return MigrationRequest(
+        path,
+        original,
+        source_version,
+        attempts,
+        role=role,
+        consumer_roots=consumer_roots,
+    )
 
 
 def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> MigrationBatch:
@@ -140,6 +154,7 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
     files: list[MigrationFile] = []
     for request in request_list:
         attempt, source_compile = _compile_source(request, config)
+        contextual_validation = request.role == "dependency"
         source_version = attempt.rule_version if attempt is not None else request.source_version
         source_compiler = source_compile.resolved_compiler or (
             attempt.compiler_label if attempt is not None else None
@@ -170,6 +185,8 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
         report = FileReport(
             path=request.path,
             role=request.role,
+            validation_mode="consumer-roots" if contextual_validation else "direct",
+            consumer_roots=tuple(path.resolve() for path in request.consumer_roots),
             changed=request.original != rewrite.source,
             fixes=rewrite.fixes,
             # Validation diagnostics belong to the report, not the rule result.
@@ -177,10 +194,20 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
             # as the corpus result's `diagnostics` field.
             diagnostics=list(rewrite.diagnostics),
             source_version=source_version,
-            source_compiler=source_compiler,
-            source_compile=source_compile.status,
-            source_unavailable_formats=list(getattr(source_compile, "unavailable_formats", ())),
-            source_error=(source_compile.stderr if source_compile.status == "failed" else None),
+            source_compiler=None if contextual_validation else source_compiler,
+            source_compile="skipped" if contextual_validation else source_compile.status,
+            source_unavailable_formats=(
+                []
+                if contextual_validation
+                else list(getattr(source_compile, "unavailable_formats", ()))
+            ),
+            source_error=(
+                None
+                if contextual_validation
+                else source_compile.stderr
+                if source_compile.status == "failed"
+                else None
+            ),
             source_attestation=_validation_attestation(
                 source_compile,
                 _declared_spec(snapshot_sources, source_compile.compiler_declarations),
@@ -189,10 +216,10 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
                     hashlib.sha256(request.original.encode()).hexdigest(),
                 ),
             )
-            if source_compile.status != "skipped"
+            if not contextual_validation and source_compile.status != "skipped"
             else None,
         )
-        if source_compile.status != "skipped":
+        if not contextual_validation and source_compile.status != "skipped":
             report.source_unavailable_artifacts = unavailable_validation_artifacts(source_compile)
         files.append(
             MigrationFile(
@@ -245,6 +272,8 @@ def validate_migrations(
         for migration in batch.files:
             _reset_target_validation(migration.report, migration.validation_diagnostics)
             migration.target_compile = None
+            if migration.report.validation_mode == "consumer-roots":
+                continue
             source_context = MigrationContext.from_specs(
                 migration.request.source_version, config.target_version
             )
@@ -311,9 +340,10 @@ def _compile_source(
 
     first_attempt: SourceCompileAttempt | None = None
     first_result: CompileResult | None = None
+    compile_source = compile_source_ast if request.role == "dependency" else compile_source_file
     for attempt in request.source_attempts:
         attempt_config = replace(config, source_version=attempt.rule_version, source_ast=None)
-        result = compile_source_file(request.path, attempt_config, attempt.compile_version)
+        result = compile_source(request.path, attempt_config, attempt.compile_version)
         if first_result is None:
             first_attempt = attempt
             first_result = result

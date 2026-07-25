@@ -115,7 +115,7 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--write` — apply changes in place only after the validation decision passes.
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
-- `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
+- `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency modules are analyzed with compiler ASTs but validated through their consumer roots, and dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--closure-output DIR` — write the validated upgraded closure (project + dependencies, laid out import-root-relative so `vyper -p DIR` resolves every import) into DIR; requires `--include-dependencies`; overwrites files inside DIR, never deletes extras, never modifies dependency sources in place.
 - `--closure-archive OUT.vyz` — emit the validated upgraded closure (dependencies bundled) as a single Vyper archive via the target compiler; requires `--include-dependencies`, a target >= 0.4.0, and exactly one entry contract.
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
@@ -133,16 +133,20 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `4` provides producer
-identity plus separate source and target validation attestations. Each
+JSON reports include a top-level `schema_version`. Version `5` distinguishes
+direct contract validation from dependency validation attributed through one or
+more consumer roots. Dependency reports list those roots and summarize their
+compile outcomes without claiming standalone compiler attestations. Version `4`
+provides producer identity plus separate source and target validation
+attestations. Each
 attestation records the declared source snapshot and compiler declarations,
 compiler authority and identity, dependency context, process completion and
 exit status, validated sources, the exact compile attempt, typed failure origin,
 and compiler output when validation fails. Version `2` added a per-file `role`
 and a top-level `closure` object; version `3` first introduced source-validation
-evidence and is superseded by version `4`. Consumers should treat a missing
-version as the legacy unversioned format and require a new schema version before
-relying on renamed, removed, or type-changed fields.
+evidence and is superseded by versions `4` and `5`. Consumers should treat a
+missing version as the legacy unversioned format and require a new schema
+version before relying on renamed, removed, or type-changed fields.
 
 ### Configuration
 

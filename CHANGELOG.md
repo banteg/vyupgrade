@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Analyze upgraded dependency modules with compiler-annotated ASTs, validate
+  them through their consumer contracts instead of as standalone contracts,
+  and report that consumer-root evidence explicitly in JSON schema v5.
+
 ## 0.6.2 - 2026-07-25
 
 - Fixed declared-project source validation for explicit Vyper executables that
