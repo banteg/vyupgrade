@@ -40,7 +40,9 @@ CompletionStatus = Literal[
 ]
 Severity = Literal["info", "warning", "error"]
 ValidationDecisionStatus = Literal["not-required", "passed", "waived", "blocked"]
+ValidationMode = Literal["direct", "consumer-roots"]
 ValidationIssueCode = Literal[
+    "consumer_roots_unavailable",
     "target_compile_failed",
     "target_artifacts_unavailable",
     "source_compile_failed",
@@ -50,7 +52,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,8 @@ class ValidationAttestation:
 class FileReport:
     path: Path
     role: str = "project"
+    validation_mode: ValidationMode = "direct"
+    consumer_roots: tuple[Path, ...] = ()
     changed: bool = False
     fixes: list[Fix] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
@@ -418,6 +422,8 @@ class RunReport:
                     "fixes": [fix.__dict__ for fix in file.fixes],
                     "diagnostics": [diag.__dict__ for diag in file.diagnostics],
                     "validation": {
+                        "mode": file.validation_mode,
+                        "consumer_roots": [str(path) for path in file.consumer_roots],
                         "source_version": file.source_version,
                         "source_compiler": file.source_compiler,
                         "source_compile": file.source_compile,

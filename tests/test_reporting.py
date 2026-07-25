@@ -55,7 +55,7 @@ def test_json_report_declares_attestation_schema_version() -> None:
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 4
+    assert data["schema_version"] == 5
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
     assert data["closure"] is None
@@ -365,3 +365,34 @@ def test_closure_summary_omits_impossible_write_hint() -> None:
 
     assert "run with --write" not in text
     assert "run with --write" not in stream.getvalue()
+
+
+def test_render_reports_consumer_root_validation_context() -> None:
+    root = Path("/project/main.vy")
+    file_report = FileReport(
+        path=Path("/project/modules/token.vy"),
+        role="dependency",
+        validation_mode="consumer-roots",
+        consumer_roots=(root,),
+        changed=True,
+        source_compile="passed",
+        target_compile="passed",
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+    stream = StringIO()
+    console = Console(file=stream, no_color=True, width=120)
+
+    text = render_text(report)
+    render_rich(report, console)
+    data = report.to_json_obj()["files"][0]["validation"]
+
+    assert "validation mode: consumer roots" in text
+    assert f"consumer roots: {root}" in text
+    assert "consumer-root source compile: passed" in text
+    assert "consumer-root target compile: passed" in text
+    assert "validation mode: consumer roots" in stream.getvalue()
+    assert f"consumer roots: {root}" in stream.getvalue()
+    assert "consumer-root source compile: passed" in stream.getvalue()
+    assert "consumer-root target compile: passed" in stream.getvalue()
+    assert data["mode"] == "consumer-roots"
+    assert data["consumer_roots"] == [str(root)]

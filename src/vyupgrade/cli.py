@@ -356,6 +356,7 @@ def _dependency_requests(
             path.read_text(encoding="utf-8"),
             dependency_config,
             role="dependency",
+            consumer_roots=closure.consumers.get(path, ()),
         )
         for path in closure.dependencies
         if path.suffix in {".vy", ".vyi"}

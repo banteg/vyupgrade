@@ -714,10 +714,16 @@ def test_real_compiler_include_dependencies_upgrades_closure(
     files = {Path(file["path"]): file for file in data["files"]}
     assert files[project.resolve()]["validation"]["target_compile"] == "passed"
     assert files[dependency.resolve()]["validation"]["target_compile"] == "passed"
+    assert files[dependency.resolve()]["validation"]["mode"] == "consumer-roots"
+    assert files[dependency.resolve()]["validation"]["consumer_roots"] == [
+        str(project.resolve())
+    ]
     assert files[dependency.resolve()]["role"] == "dependency"
 
 
-def test_real_fixed_target_dependency_rejection_has_typed_origin(tmp_path: Path) -> None:
+def test_real_fixed_target_dependency_rejection_is_attributed_to_consumer_root(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     project = project_root / "main.vy"
     search_path = tmp_path / "site-packages"
@@ -753,16 +759,104 @@ def test_real_fixed_target_dependency_rejection_has_typed_origin(tmp_path: Path)
 
     assert code != 0
     files = {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
+    project_report = files[project.resolve()]
     dependency_report = files[dependency.resolve()]
-    assert dependency_report["role"] == "dependency"
-    assert dependency_report["validation"]["source_compile"] == "passed"
-    assert dependency_report["validation"]["target_compile"] == "failed"
-    target_attestation = dependency_report["validation"]["target_attestation"]
+    assert project_report["validation"]["target_compile"] == "failed"
+    target_attestation = project_report["validation"]["target_attestation"]
     assert target_attestation["authority_rule"] == "fixed-target"
-    assert target_attestation["failure_origin"] == "fixed-target-dependency"
+    assert target_attestation["failure_origin"] == "fixed-target-rewrite"
     assert target_attestation["compiler_started"] is True
     assert target_attestation["exit_status"] == {"code": 1, "signal": None}
     assert target_attestation["compiler_output"]["stderr"]
+    assert dependency_report["role"] == "dependency"
+    assert dependency_report["validation"]["mode"] == "consumer-roots"
+    assert dependency_report["validation"]["consumer_roots"] == [str(project.resolve())]
+    assert dependency_report["validation"]["source_compile"] == "passed"
+    assert dependency_report["validation"]["target_compile"] == "failed"
+    assert dependency_report["validation"]["target_attestation"] is None
+    assert dependency_report["validation"]["decision"]["status"] == "blocked"
+
+
+def test_real_stateful_dependency_validates_through_consumer_root(tmp_path: Path) -> None:
+    root = tmp_path / "main.vy"
+    ownable = tmp_path / "ownable.vy"
+    token = tmp_path / "token.vy"
+    ownable.write_text(
+        """# pragma version 0.4.1
+
+owner: public(address)
+
+@deploy
+def __init__():
+    self.owner = msg.sender
+""",
+        encoding="utf-8",
+    )
+    token.write_text(
+        """# pragma version 0.4.1
+
+from . import ownable
+uses: ownable
+
+@external
+@view
+def get_owner() -> address:
+    return ownable.owner
+""",
+        encoding="utf-8",
+    )
+    root.write_text(
+        """# pragma version 0.4.1
+
+from . import ownable
+initializes: ownable
+
+from . import token
+initializes: token[ownable := ownable]
+exports: token.get_owner
+
+@deploy
+def __init__():
+    ownable.__init__()
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(root),
+            "--target-version",
+            "0.4.3",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(tmp_path),
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    files = {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
+    root_report = files[root.resolve()]
+    token_report = files[token.resolve()]
+    assert root_report["validation"]["source_compile"] == "passed"
+    assert root_report["validation"]["target_compile"] == "passed"
+    assert root_report["validation"]["abi_equal"] is True
+    assert root_report["validation"]["method_ids_equal"] is True
+    assert root_report["validation"]["storage_layout_equal"] is True
+    assert token_report["role"] == "dependency"
+    assert token_report["validation"]["mode"] == "consumer-roots"
+    assert token_report["validation"]["consumer_roots"] == [str(root.resolve())]
+    assert token_report["validation"]["source_compile"] == "passed"
+    assert token_report["validation"]["target_compile"] == "passed"
+    assert token_report["validation"]["source_attestation"] is None
+    assert token_report["validation"]["target_attestation"] is None
+    assert token_report["validation"]["decision"]["status"] == "passed"
+    assert (output / "token.vy").is_file()
 
 
 def test_real_compiler_closure_output_tree_compiles_standalone(
@@ -1005,7 +1099,7 @@ def decimals() -> uint8:
     )
 
     report_data = json.loads(report.read_text(encoding="utf-8"))
-    assert report_data["schema_version"] == 4
+    assert report_data["schema_version"] == 5
     assert report_data["producer"] == {"name": "vyupgrade", "version": "0.6.2"}
     validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]

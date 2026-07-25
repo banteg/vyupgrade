@@ -126,6 +126,9 @@ def _render_text_file(file: FileReport) -> str:
         lines.append(f"  {_group_text(group)}")
     for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
         lines.append(f"  {_group_text(group)}")
+    if file.validation_mode == "consumer-roots":
+        lines.append("  validation mode: consumer roots")
+        lines.append("  consumer roots: " + ", ".join(str(path) for path in file.consumer_roots))
     for label, status, error_label, error in _compile_outputs(file):
         lines.append(f"  {label}: {status}")
         if status == "failed" and error:
@@ -280,6 +283,14 @@ def _render_file(console: Console, file: FileReport) -> None:
         console.print(_group_rich_text(group))
     for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
         console.print(_group_rich_text(group))
+    if file.validation_mode == "consumer-roots":
+        console.print(_indented("validation mode: consumer roots", "vy.muted"))
+        console.print(
+            _indented(
+                "consumer roots: " + ", ".join(str(path) for path in file.consumer_roots),
+                "vy.muted",
+            )
+        )
     for label, status, error_label, error in _compile_outputs(file):
         console.print(_compile_line(label, status))
         if status == "failed" and error:
@@ -328,10 +339,11 @@ def _render_file(console: Console, file: FileReport) -> None:
 
 
 def _compile_outputs(file: FileReport) -> tuple[tuple[str, str, str, str | None], ...]:
-    source_label = _compile_label("source compile", file.source_compiler)
+    scope = "consumer-root " if file.validation_mode == "consumer-roots" else ""
+    source_label = _compile_label(f"{scope}source compile", file.source_compiler)
     return (
         (source_label, file.source_compile, "source error", file.source_error),
-        ("target compile", file.target_compile, "target error", file.target_error),
+        (f"{scope}target compile", file.target_compile, "target error", file.target_error),
     )
 
 
