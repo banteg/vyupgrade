@@ -365,6 +365,7 @@ class Config:
     allow_method_id_change: bool = False
     allow_storage_layout_change: bool = False
     source_ast: dict[str, Any] | None = None
+    strip_pragma: bool = False
 
 
 @dataclass

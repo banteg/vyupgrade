@@ -293,6 +293,55 @@ def f():
     assert result.source.startswith("#pragma version 0.4.3\n")
 
 
+def test_pragma_can_be_stripped_without_leaving_a_blank_line(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(strip_pragma=True))
+
+    assert result.source == """@external
+def f():
+    pass
+"""
+    assert [(fix.rule, fix.message) for fix in result.fixes] == [
+        ("VY001", "removed version pragma")
+    ]
+    assert apply_rules(result.source, config(strip_pragma=True)).source == result.source
+
+
+def test_strip_pragma_does_not_add_a_missing_pragma_or_touch_docstrings(config) -> None:
+    source = '''@external
+def f():
+    """
+    # @version 0.3.10
+    """
+    pass
+'''
+
+    result = apply_rules(
+        source,
+        config(strip_pragma=True, source_version="0.3.10"),
+    )
+
+    assert result.source == source
+    assert not [fix for fix in result.fixes if fix.rule == "VY001"]
+
+
+def test_strip_pragma_removes_every_source_directive(config) -> None:
+    source = """# @version 0.3.10
+#pragma version >=0.3.10,<0.5.0
+x: uint256
+"""
+
+    result = apply_rules(source, config(strip_pragma=True))
+
+    assert result.source == "x: uint256\n"
+    assert [fix.line for fix in result.fixes if fix.rule == "VY001"] == [1, 2]
+
+
 def test_legacy_0_2_1_syntax_rewrites_are_granular(config) -> None:
     source = """# @version 0.2.1
 Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})

@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         paths=tuple(paths),
         target_version=args.target_version or pyproject.get("target-version", "0.4.3"),
         source_version=args.source_version or _none_if_infer(pyproject.get("source-version")),
+        strip_pragma=args.strip_pragma or bool(pyproject.get("strip-pragma", False)),
         write=args.write,
         check=args.check,
         diff=args.diff,
@@ -276,6 +277,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--target-version")
     parser.add_argument("--source-version")
+    parser.add_argument("--strip-pragma", action="store_true")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--diff", action="store_true")
