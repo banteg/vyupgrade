@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-07-27
+
 - Added per-file Vyper exception class names to JSON compiler failure reports
   as schema v6. Compiler return codes remain available in each validation
   attestation's exit status.
