@@ -107,6 +107,7 @@ def main() -> None:
             "state": "complete",
             "compiler_started": True,
             "failure_origin": process["failure_origin"],
+            "error_type": process.get("error_type"),
             "completion_status": process["completion_status"],
             "returncode": process["returncode"],
             "stdout": process["stdout"],
@@ -169,9 +170,10 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
         tempfile.TemporaryFile("w+", encoding="utf-8") as stderr,
     ):
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            error_type = None
             try:
                 vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
-                exception_type = importlib.import_module("vyper.exceptions").VyperException
+                vyper_exception_type = importlib.import_module("vyper.exceptions").VyperException
                 vyper_compile._parse_args(command[1:])
                 returncode = 0
                 origin = None
@@ -179,8 +181,9 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
                 returncode = exc.code if type(exc.code) is int else 1
                 origin = None if returncode == 0 else "adapter"
             except BaseException as exc:
-                if "exception_type" in locals() and isinstance(exc, exception_type):
+                if "vyper_exception_type" in locals() and isinstance(exc, vyper_exception_type):
                     origin = "compiler"
+                    error_type = type(exc).__name__
                 else:
                     origin = "compiler-internal"
                 traceback.print_exception(exc, file=stderr)
@@ -190,6 +193,7 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
         return {
             "returncode": returncode,
             "failure_origin": origin,
+            "error_type": error_type,
             "completion_status": "completed",
             "stdout": stdout.read(),
             "stderr": stderr.read(),

@@ -134,20 +134,23 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `5` distinguishes
-direct contract validation from dependency validation attributed through one or
-more consumer roots. Dependency reports list those roots and summarize their
-compile outcomes without claiming standalone compiler attestations. Version `4`
-provides producer identity plus separate source and target validation
-attestations. Each
-attestation records the declared source snapshot and compiler declarations,
-compiler authority and identity, dependency context, process completion and
-exit status, validated sources, the exact compile attempt, typed failure origin,
-and compiler output when validation fails. Version `2` added a per-file `role`
-and a top-level `closure` object; version `3` first introduced source-validation
-evidence and is superseded by versions `4` and `5`. Consumers should treat a
-missing version as the legacy unversioned format and require a new schema
-version before relying on renamed, removed, or type-changed fields.
+JSON reports include a top-level `schema_version`. Version `6` adds per-file
+`source_error_type` and `target_error_type` fields containing the Vyper
+exception class name when the managed compiler exposes one. Compiler process
+return codes remain available in each source or target attestation's
+`exit_status.code`. Version `5` distinguishes direct contract validation from
+dependency validation attributed through one or more consumer roots. Dependency
+reports list those roots and summarize their compile outcomes without claiming
+standalone compiler attestations. Version `4` provides producer identity plus
+separate source and target validation attestations. Each attestation records the
+declared source snapshot and compiler declarations, compiler authority and
+identity, dependency context, process completion and exit status, validated
+sources, the exact compile attempt, typed failure origin, and compiler output
+when validation fails. Version `2` added a per-file `role` and a top-level
+`closure` object; version `3` first introduced source-validation evidence and is
+superseded by versions `4`, `5`, and `6`. Consumers should treat a missing
+version as the legacy unversioned format and require a new schema version before
+relying on renamed, removed, or type-changed fields.
 
 ### Configuration
 

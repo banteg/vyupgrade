@@ -1678,7 +1678,7 @@ def test_overlay_layout_conflict_exits_4(tmp_path: Path, passing_compiler, capsy
     assert str(second.resolve()) in stderr
 
 
-def test_report_json_schema_v5(tmp_path: Path, passing_compiler) -> None:
+def test_report_json_schema_v6(tmp_path: Path, passing_compiler) -> None:
     project, dependency, search_path, json_dependency = _write_dependency_cli_fixture(
         tmp_path, include_json=True
     )
@@ -1710,11 +1710,13 @@ def test_report_json_schema_v5(tmp_path: Path, passing_compiler) -> None:
     assert closure_code == 0
     project_data = json.loads(project_report.read_text())
     closure_data = json.loads(closure_report.read_text())
-    assert project_data["schema_version"] == 5
+    assert project_data["schema_version"] == 6
     assert project_data["producer"]["name"] == "vyupgrade"
     assert project_data["producer"]["version"]
     assert project_data["closure"] is None
     assert all(file["role"] == "project" for file in project_data["files"])
+    assert project_data["files"][0]["source_error_type"] is None
+    assert project_data["files"][0]["target_error_type"] is None
     source_attestation = project_data["files"][0]["validation"]["source_attestation"]
     assert {
         "declared_spec",
@@ -1729,7 +1731,7 @@ def test_report_json_schema_v5(tmp_path: Path, passing_compiler) -> None:
         "failure_origin",
         "compiler_output",
     } == source_attestation.keys()
-    assert closure_data["schema_version"] == 5
+    assert closure_data["schema_version"] == 6
     assert closure_data["closure"] == {
         "requested": True,
         "dependencies": sorted([str(dependency.resolve()), str(json_dependency.resolve())]),

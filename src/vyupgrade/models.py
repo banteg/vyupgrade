@@ -52,7 +52,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 5
+REPORT_SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -292,9 +292,11 @@ class FileReport:
     source_compile: str = "skipped"
     target_compile: str = "skipped"
     source_error: str | None = None
+    source_error_type: str | None = None
     source_attestation: ValidationAttestation | None = None
     target_attestation: ValidationAttestation | None = None
     target_error: str | None = None
+    target_error_type: str | None = None
     abi_equal: bool | None = None
     method_ids_equal: bool | None = None
     storage_layout_equal: bool | None = None
@@ -452,7 +454,9 @@ class RunReport:
                         "decision": file.validation_decision.to_json_obj(),
                     },
                     "source_error": file.source_error,
+                    "source_error_type": file.source_error_type,
                     "target_error": file.target_error,
+                    "target_error_type": file.target_error_type,
                 }
                 for file in self.files
             ],

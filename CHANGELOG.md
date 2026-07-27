@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added per-file Vyper exception class names to JSON compiler failure reports
+  as schema v6. Compiler return codes remain available in each validation
+  attestation's exit status.
+
 ## 0.7.0 - 2026-07-25
 
 - Added opt-in `--strip-pragma` output that removes version pragmas from
