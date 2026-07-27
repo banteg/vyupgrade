@@ -50,15 +50,34 @@ def test_render_text_includes_compile_errors() -> None:
     assert 'Version specification "0.2.11" is not compatible' in text
 
 
-def test_json_report_declares_attestation_schema_version() -> None:
+def test_json_report_declares_structured_error_schema_version() -> None:
     report = RunReport(source_version=None, target_version="0.4.3", files=[])
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 5
+    assert data["schema_version"] == 6
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
     assert data["closure"] is None
+
+
+def test_json_report_includes_structured_compiler_error_types() -> None:
+    file_report = FileReport(
+        path=Path("bad.vy"),
+        source_compile="failed",
+        source_error="source failed",
+        source_error_type="TypeMismatch",
+        target_compile="failed",
+        target_error="target failed",
+        target_error_type="UnknownAttribute",
+    )
+
+    file_data = RunReport(
+        source_version="0.3.10", target_version="0.4.3", files=[file_report]
+    ).to_json_obj()["files"][0]
+
+    assert file_data["source_error_type"] == "TypeMismatch"
+    assert file_data["target_error_type"] == "UnknownAttribute"
 
 
 def test_closure_summary_reports_upgraded_dependency_count() -> None:

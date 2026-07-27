@@ -208,6 +208,11 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
                 if source_compile.status == "failed"
                 else None
             ),
+            source_error_type=(
+                None
+                if contextual_validation or source_compile.status != "failed"
+                else source_compile.error_type
+            ),
             source_attestation=_validation_attestation(
                 source_compile,
                 _declared_spec(snapshot_sources, source_compile.compiler_declarations),
@@ -490,6 +495,9 @@ def _record_target_compile(
     report.target_unavailable_artifacts = unavailable_validation_artifacts(target_compile)
     report.target_unavailable_formats = list(getattr(target_compile, "unavailable_formats", ()))
     report.target_error = target_compile.stderr if target_compile.status == "failed" else None
+    report.target_error_type = (
+        target_compile.error_type if target_compile.status == "failed" else None
+    )
     report_source = next(
         (source for source in declared_spec.sources if source.path == str(report.path.resolve())),
         declared_spec.sources[0],
@@ -514,6 +522,7 @@ def _reset_target_validation(report: FileReport, validation_diagnostics: list[Di
     report.target_unavailable_artifacts.clear()
     report.target_unavailable_formats.clear()
     report.target_error = None
+    report.target_error_type = None
     report.target_attestation = None
     report.abi_equal = None
     report.method_ids_equal = None

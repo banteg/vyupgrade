@@ -481,7 +481,9 @@ def test_source_failure_uses_typed_waiver(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         engine,
         "compile_source_file",
-        lambda *_args: CompileResult("failed", stderr="source failed"),
+        lambda *_args: CompileResult(
+            "failed", stderr="source failed", error_type="UnknownAttribute"
+        ),
     )
     monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
     monkeypatch.setattr(
@@ -496,6 +498,31 @@ def test_source_failure_uses_typed_waiver(monkeypatch, tmp_path: Path) -> None:
 
     assert decision.status == "waived"
     assert [issue.code for issue in decision.waivers] == ["source_compile_failed"]
+    assert batch.files[0].report.source_error_type == "UnknownAttribute"
+
+
+def test_target_failure_preserves_vyper_exception_type(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "Contract.vy"
+    monkeypatch.setattr(
+        engine,
+        "compile_source_file",
+        lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
+    )
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+    monkeypatch.setattr(
+        engine,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "failed", stderr="target failed", error_type="TypeMismatch"
+        ),
+    )
+    config = _config(tmp_path)
+    batch = engine.prepare_migrations((_request(path),), config)
+
+    decision = engine.validate_migrations(batch, config)
+
+    assert decision.status == "blocked"
+    assert batch.files[0].report.target_error_type == "TypeMismatch"
 
 
 @pytest.mark.parametrize(

@@ -72,6 +72,8 @@ def _decide_consumer_root_validation(
     report.source_compiler = compilers.pop() if len(compilers) == 1 else None
     report.source_error = None
     report.target_error = None
+    report.source_error_type = None
+    report.target_error_type = None
     report.source_attestation = None
     report.target_attestation = None
     report.source_unavailable_artifacts.clear()

@@ -45,6 +45,7 @@ def _compiler_process(
     stdout: str = TARGET_COMPILER_OUTPUT,
     stderr: str = "",
     failure_origin: FailureOrigin | None = None,
+    error_type: str | None = None,
     error: str | None = None,
 ) -> _CompilerProcess:
     return _CompilerProcess(
@@ -56,6 +57,7 @@ def _compiler_process(
         resolved_compiler="0.4.3",
         compiler_started=True,
         failure_origin=failure_origin or ("compiler" if returncode else None),
+        error_type=error_type,
         error=error,
     )
 
@@ -623,6 +625,25 @@ def test_compile_preserves_typed_timeout_failure(monkeypatch) -> None:
     assert result.stderr == "compiler timed out after 120 seconds"
     assert result.failure_origin == "timeout"
     assert result.compiler_started is True
+
+
+def test_compile_preserves_vyper_exception_type(monkeypatch) -> None:
+    def fake_run(command, *_args, **_kwargs):
+        return _compiler_process(
+            command,
+            returncode=1,
+            stderr="vyper.exceptions.TypeMismatch: incompatible types",
+            error_type="TypeMismatch",
+        )
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "failed"
+    assert result.error_type == "TypeMismatch"
 
 
 def test_compile_source_ast_prefers_annotated_ast(monkeypatch, tmp_path) -> None:

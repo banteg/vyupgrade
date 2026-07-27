@@ -1156,7 +1156,7 @@ def decimals() -> uint8:
     )
 
     report_data = json.loads(report.read_text(encoding="utf-8"))
-    assert report_data["schema_version"] == 5
+    assert report_data["schema_version"] == 6
     assert report_data["producer"] == {"name": "vyupgrade", "version": __version__}
     validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]
@@ -1652,6 +1652,33 @@ except subprocess.TimeoutExpired:
     raise SystemExit(0)
 raise SystemExit("managed compiler did not time out")
 """,
+    )
+
+    assert process.returncode == 0, process.stderr
+
+
+def test_managed_compiler_reports_vyper_exception_type(tmp_path: Path) -> None:
+    site, _bin_dir = _write_managed_vyper_environment(
+        tmp_path,
+        """from vyper.exceptions import VyperException
+
+class TypeMismatch(VyperException):
+    pass
+
+def _parse_args(_arguments):
+    raise TypeMismatch("incompatible types")
+"""
+    )
+
+    process = _run_managed_compiler_harness(
+        site,
+        """from vyupgrade.compiler_runner import _run_managed_compiler
+
+result = _run_managed_compiler(["vyper"], 5)
+assert result["failure_origin"] == "compiler", result
+assert result["error_type"] == "TypeMismatch", result
+assert result["returncode"] == 1, result
+"""
     )
 
     assert process.returncode == 0, process.stderr

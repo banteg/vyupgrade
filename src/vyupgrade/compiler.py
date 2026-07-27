@@ -119,6 +119,7 @@ class CompileResult:
     dependency_context: DependencyContext | None = None
     compiler_started: bool = False
     failure_origin: FailureOrigin | None = None
+    error_type: str | None = None
     compiler_output: CompilerOutput | None = None
     compiler_identity: ResolvedCompiler | None = None
     compiler_authority: CompilerAuthority = "default"
@@ -138,6 +139,7 @@ class _CompilerProcess:
     resolved_compiler: str | None = None
     compiler_started: bool = False
     failure_origin: FailureOrigin | None = None
+    error_type: str | None = None
     error: str | None = None
     compiler_identity: ResolvedCompiler | None = None
     compiler_authority: CompilerAuthority = "default"
@@ -2012,6 +2014,7 @@ def _failed_compile_result(
         dependency_context=process.context,
         compiler_started=process.compiler_started,
         failure_origin=process.failure_origin or "adapter",
+        error_type=process.error_type,
         compiler_output=compiler_output,
         compiler_identity=process.compiler_identity,
         compiler_authority=process.compiler_authority,
@@ -2307,6 +2310,7 @@ def _compiler_process_from_payload(
         resolved_compiler=_payload_string(payload, "resolved_compiler"),
         compiler_started=payload.get("compiler_started") is True,
         failure_origin=origin,
+        error_type=_payload_string(payload, "error_type"),
         error=_payload_string(payload, "error"),
         compiler_identity=_payload_compiler_identity(payload),
         compiler_authority=compiler_authority,
