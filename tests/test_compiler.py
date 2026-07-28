@@ -1,6 +1,7 @@
 from __future__ import annotations
 from hashlib import sha256
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from vyupgrade.compiler import (
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
+    _run_compiler_process,
     _supports_warning_policy,
     _target_validation_source,
     _uv_bin,
@@ -561,6 +563,109 @@ def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) 
     ):
         assert prepared == command
         assert context == DependencyContext(mode="isolated")
+
+
+def _managed_command(contract: Path) -> list[str]:
+    return [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.4.1",
+        "vyper",
+        str(contract),
+    ]
+
+
+def _unprovisioned_contract(tmp_path, monkeypatch) -> Path:
+    """A contract whose compiler process sees no declared project and no provisioned environment."""
+    contract = tmp_path / "contract.vy"
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    monkeypatch.setattr("vyupgrade.compiler._nearest_pyproject", lambda _path: None)
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONED_ENVIRONMENTS", set())
+    return contract
+
+
+def _compile(contract: Path) -> _CompilerProcess:
+    return _run_compiler_process(
+        _managed_command(contract),
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=7.0,
+    )
+
+
+def _is_provisioning(command: list[str]) -> bool:
+    return command[-2:] == ["-c", ""]
+
+
+def test_uv_environment_is_provisioned_once_outside_the_compile_budget(
+    tmp_path, monkeypatch
+) -> None:
+    contract = _unprovisioned_contract(tmp_path, monkeypatch)
+    calls: list[tuple[list[str], float]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    _compile(contract)
+    process = _compile(contract)
+
+    provisioning = [(command, timeout) for command, timeout in calls if _is_provisioning(command)]
+    compiles = [timeout for command, timeout in calls if not _is_provisioning(command)]
+
+    assert len(provisioning) == 1
+    assert provisioning[0] == ([*_managed_command(contract)[:7], "python", "-c", ""], 7.0)
+    assert compiles == [41.0, 41.0]
+    assert process.failure_origin == "timeout"
+    assert process.error == "compiler timed out after 11 seconds"
+
+
+def test_failed_provisioning_still_attempts_the_compile(tmp_path, monkeypatch) -> None:
+    contract = _unprovisioned_contract(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if _is_provisioning(command):
+            raise OSError("network is unreachable")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    process = _compile(contract)
+
+    assert [_is_provisioning(command) for command in calls] == [True, False]
+    assert any(Path(argument).name == "compiler_runner.py" for argument in calls[1])
+    assert process.failure_origin == "adapter"
+
+
+def test_explicit_compiler_is_not_provisioned(tmp_path, monkeypatch) -> None:
+    contract = _unprovisioned_contract(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    _run_compiler_process(
+        [str(tmp_path / "vyper"), str(contract)],
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=7.0,
+    )
+
+    assert len(calls) == 1
+    assert Path(calls[0][1]).name == "compiler_runner.py"
 
 
 def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_path) -> None:

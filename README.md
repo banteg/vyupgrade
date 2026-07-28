@@ -128,6 +128,8 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--source-vyper` / `--target-vyper` — pin the exact compiler version for each side.
 - `--source-python` / `--target-python` — pin the Python interpreter for each compiler subprocess.
 - `--compiler-search-paths` — extra import search paths for the compiler.
+- `--compiler-timeout SECONDS` — time budget for each compile, measured after its environment is provisioned (default `120`).
+- `--network-timeout SECONDS` — time budget for provisioning each compiler environment: interpreter selection, downloads, and installs (default `300`). Raise it on slow or cold CI hosts.
 - `--allow-unvalidated-source` — write despite a failed source compile or unavailable source artifacts.
 - `--allow-abi-change` — write despite an ABI comparison mismatch.
 - `--allow-method-id-change` — write despite a method-identifier comparison mismatch.
@@ -171,6 +173,8 @@ allow-unvalidated-source = false
 allow-abi-change = false
 allow-method-id-change = false
 allow-storage-layout-change = false
+compiler-timeout = 120
+network-timeout = 300
 ```
 
 ### Exit codes

@@ -1909,11 +1909,7 @@ def test_real_missing_compiler_is_launch_origin(tmp_path: Path) -> None:
     assert result.compiler_output is None
 
 
-def test_real_compiler_timeout_is_timeout_origin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from vyupgrade import compiler
-
+def test_real_compiler_timeout_is_timeout_origin(tmp_path: Path) -> None:
     executable = _write_test_compiler(
         tmp_path,
         """import time
@@ -1922,11 +1918,15 @@ time.sleep(5)
     )
     contract = tmp_path / "contract.vy"
     contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
-    monkeypatch.setattr(compiler, "COMPILE_TIMEOUT_SECONDS", 0.05)
 
     result = compile_source_file(
         contract,
-        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        Config(
+            paths=(contract,),
+            target_version="0.4.3",
+            source_vyper=str(executable),
+            compiler_timeout=0.05,
+        ),
         "0.4.1",
     )
 

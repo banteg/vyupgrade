@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import sys
+import threading
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
 from pathlib import Path
@@ -23,6 +24,7 @@ from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
 from .models import (
+    DEFAULT_NETWORK_TIMEOUT_SECONDS,
     CompilerAuthority,
     CompilerDeclaration,
     CompilerOutput,
@@ -50,7 +52,7 @@ from .versions import (
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 TARGET_FORMATS = (*FORMATS, "ast")
-COMPILE_TIMEOUT_SECONDS = 120
+ADAPTER_TIMEOUT_GRACE_SECONDS = 30
 ARCHIVE_TARGET_FLOOR = "0.4.0"
 OVERLAY_EXCLUDED_PARTS = {
     ".git",
@@ -72,6 +74,10 @@ VALIDATION_SOURCE_SUFFIXES = {".vy", ".vyi", ".json"}
 VALIDATION_MODULE_ALIASES = {
     "create2": "create2_address",
 }
+
+# uv environments provisioned in this process, keyed by their `uv run` prefix.
+_PROVISIONED_ENVIRONMENTS: set[tuple[str, ...]] = set()
+_PROVISIONING_LOCK = threading.Lock()
 
 _MARKER_ENVIRONMENT_SCRIPT = """
 import json
@@ -437,6 +443,8 @@ def compile_target_archive(
             path,
             project_compiler=False,
             python_pin=config.target_python,
+            compiler_timeout=config.compiler_timeout,
+            network_timeout=config.network_timeout,
             cwd=overlay.root,
         )
         if process.compiler_started:
@@ -1889,6 +1897,8 @@ def _run_compile_with_formats(
         environment_path,
         project_compiler=project_compiler,
         python_pin=config.source_python if project_compiler else config.target_python,
+        compiler_timeout=config.compiler_timeout,
+        network_timeout=config.network_timeout,
     )
     if process.compiler_started and path.is_file():
         process = replace(
@@ -2095,6 +2105,8 @@ def _run_compiler_process(
     path: Path,
     *,
     project_compiler: bool,
+    compiler_timeout: float,
+    network_timeout: float,
     python_pin: str | None = None,
     cwd: Path | None = None,
 ) -> _CompilerProcess:
@@ -2107,6 +2119,7 @@ def _run_compiler_process(
                 command,
                 python_pin=python_pin,
                 pin_name="source" if project_compiler else "target",
+                timeout=network_timeout,
             )
         except ProjectEnvironmentError as exc:
             project = _project_data(pyproject).get("project")
@@ -2146,7 +2159,9 @@ def _run_compiler_process(
         project_compiler=project_compiler,
         marker_environment=marker_environment,
         python_pin=python_pin,
+        network_timeout=network_timeout,
     ) as (full, context):
+        _provision_environment(full, network_timeout=network_timeout, cwd=cwd)
         runner_command = _compiler_runner_command(full)
         managed_compiler = (
             _is_uv_run_command(full) and bool(runner_command) and runner_command[0] == "vyper"
@@ -2158,8 +2173,32 @@ def _run_compiler_process(
             compiler_authority=authority,
             compiler_declarations=declarations,
             coherence_spec=coherence,
+            compiler_timeout=compiler_timeout,
             cwd=cwd,
         )
+
+
+def _provision_environment(command: list[str], *, network_timeout: float, cwd: Path | None) -> None:
+    """Download and build the uv environment before the compile budget starts.
+
+    Provisioning is best effort: a failure here is reported by the compile that
+    follows, with its usual typed failure origin. The lock keeps a concurrent
+    caller from compiling in an environment that is still being provisioned.
+    """
+    if not _is_uv_run_command(command):
+        return
+    environment = tuple(_compiler_runner_prefix(command))
+    with _PROVISIONING_LOCK:
+        if environment in _PROVISIONED_ENVIRONMENTS:
+            return
+        _PROVISIONED_ENVIRONMENTS.add(environment)
+        with suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                [*environment, "-c", ""],
+                cwd=cwd,
+                capture_output=True,
+                timeout=network_timeout,
+            )
 
 
 def _run_compiler_adapter(
@@ -2170,6 +2209,7 @@ def _run_compiler_adapter(
     compiler_authority: CompilerAuthority,
     compiler_declarations: tuple[CompilerDeclaration, ...],
     coherence_spec: str | None,
+    compiler_timeout: float,
     cwd: Path | None,
 ) -> _CompilerProcess:
     result_file = tempfile.NamedTemporaryFile(
@@ -2184,7 +2224,7 @@ def _run_compiler_adapter(
         *_compiler_runner_prefix(command),
         str(Path(__file__).with_name("compiler_runner.py")),
         str(result_path),
-        str(COMPILE_TIMEOUT_SECONDS),
+        f"{compiler_timeout:g}",
         "managed" if managed_compiler else "explicit",
         coherence_spec or "",
         *_compiler_runner_command(command),
@@ -2196,7 +2236,7 @@ def _run_compiler_adapter(
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                timeout=COMPILE_TIMEOUT_SECONDS + 30,
+                timeout=compiler_timeout + ADAPTER_TIMEOUT_GRACE_SECONDS,
             )
         except subprocess.TimeoutExpired:
             payload = _compiler_runner_result(result_path)
@@ -2206,7 +2246,7 @@ def _run_compiler_adapter(
                 resolved_compiler=_payload_string(payload, "resolved_compiler"),
                 compiler_started=payload is not None,
                 failure_origin="timeout",
-                error=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
+                error=f"compiler timed out after {compiler_timeout:g} seconds",
                 compiler_identity=_payload_compiler_identity(payload),
                 compiler_authority=compiler_authority,
                 compiler_declarations=compiler_declarations,
@@ -2515,6 +2555,7 @@ def _project_marker_environment(
     *,
     python_pin: str | None,
     pin_name: str,
+    timeout: float,
 ) -> dict[str, str]:
     requested_python = (
         None
@@ -2539,7 +2580,7 @@ def _project_marker_environment(
             marker_command,
             capture_output=True,
             text=True,
-            timeout=COMPILE_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ProjectEnvironmentError(f"could not select project Python: {exc}") from exc
@@ -2576,6 +2617,7 @@ def _declared_project_environment(
     path: Path,
     *,
     project_compiler: bool,
+    network_timeout: float = DEFAULT_NETWORK_TIMEOUT_SECONDS,
     marker_environment: Mapping[str, str] | None = None,
     python_pin: str | None = None,
 ) -> Iterator[tuple[list[str], DependencyContext]]:
@@ -2590,6 +2632,7 @@ def _declared_project_environment(
             command,
             python_pin=python_pin,
             pin_name="source" if project_compiler else "target",
+            timeout=network_timeout,
         )
 
     workspace_manifest = _owning_uv_workspace(pyproject)

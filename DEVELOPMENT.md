@@ -88,7 +88,10 @@ Important files:
 - `src/vyupgrade/rule_groups/` contains the actual migration rules.
 - `src/vyupgrade/versions.py` owns supported Vyper versions and spec resolution.
 - `src/vyupgrade/compiler.py` owns compiler subprocesses, temporary overlays,
-  dependency inference, and ABI and method-identifier comparisons.
+  dependency inference, and ABI and method-identifier comparisons. Each
+  uv-managed compiler environment is provisioned once per process before its
+  first compile, so downloads are bounded by the network timeout rather than
+  the compile timeout.
 - `src/vyupgrade/storage_layout.py` owns fail-closed storage artifact parsing,
   canonicalization, target-AST evidence, and typed layout comparison.
 - `src/vyupgrade/write_plan.py` owns destination collision checks, candidate
