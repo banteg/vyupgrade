@@ -6,12 +6,13 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import sys
+import tempfile
 import threading
+import time
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
 from pathlib import Path
@@ -75,9 +76,13 @@ VALIDATION_MODULE_ALIASES = {
     "create2": "create2_address",
 }
 
-# uv environments provisioned in this process, keyed by their `uv run` prefix.
-_PROVISIONED_ENVIRONMENTS: set[tuple[str, ...]] = set()
-_PROVISIONING_LOCK = threading.Lock()
+_COMPILER_ENVIRONMENTS = tempfile.TemporaryDirectory(
+    prefix=f"vyupgrade-compiler-environments-{os.getpid()}-"
+)
+_COMPILER_ENVIRONMENT_ROOT = Path(_COMPILER_ENVIRONMENTS.name)
+_PROVISIONED_ENVIRONMENTS: set[str] = set()
+_PROVISIONING_LOCKS: dict[str, threading.Lock] = {}
+_PROVISIONING_LOCKS_LOCK = threading.Lock()
 
 _MARKER_ENVIRONMENT_SCRIPT = """
 import json
@@ -2161,7 +2166,22 @@ def _run_compiler_process(
         python_pin=python_pin,
         network_timeout=network_timeout,
     ) as (full, context):
-        _provision_environment(full, network_timeout=network_timeout, cwd=cwd)
+        try:
+            adapter_python = _provision_environment(
+                full,
+                context=context,
+                network_timeout=network_timeout,
+                cwd=cwd,
+            )
+        except ProjectEnvironmentError as exc:
+            return _CompilerProcess(
+                command=full,
+                context=context,
+                failure_origin="environment",
+                error=str(exc),
+                compiler_authority=authority,
+                compiler_declarations=declarations,
+            )
         runner_command = _compiler_runner_command(full)
         managed_compiler = (
             _is_uv_run_command(full) and bool(runner_command) and runner_command[0] == "vyper"
@@ -2173,32 +2193,176 @@ def _run_compiler_process(
             compiler_authority=authority,
             compiler_declarations=declarations,
             coherence_spec=coherence,
+            adapter_python=adapter_python,
             compiler_timeout=compiler_timeout,
             cwd=cwd,
         )
 
 
-def _provision_environment(command: list[str], *, network_timeout: float, cwd: Path | None) -> None:
-    """Download and build the uv environment before the compile budget starts.
-
-    Provisioning is best effort: a failure here is reported by the compile that
-    follows, with its usual typed failure origin. The lock keeps a concurrent
-    caller from compiling in an environment that is still being provisioned.
-    """
+def _provision_environment(
+    command: list[str],
+    *,
+    context: DependencyContext,
+    network_timeout: float,
+    cwd: Path | None,
+) -> Path | None:
+    """Prepare the environment emitted by the compiler command builders."""
     if not _is_uv_run_command(command):
-        return
-    environment = tuple(_compiler_runner_prefix(command))
-    with _PROVISIONING_LOCK:
-        if environment in _PROVISIONED_ENVIRONMENTS:
-            return
-        _PROVISIONED_ENVIRONMENTS.add(environment)
-        with suppress(OSError, subprocess.TimeoutExpired):
-            subprocess.run(
-                [*environment, "-c", ""],
-                cwd=cwd,
-                capture_output=True,
-                timeout=network_timeout,
-            )
+        return None
+    key = _compiler_environment_key(command, context)
+    environment = _COMPILER_ENVIRONMENT_ROOT / key
+    adapter_python = _environment_python(environment)
+    lock = _provisioning_lock(key)
+    deadline = time.monotonic() + network_timeout
+    if not lock.acquire(timeout=network_timeout):
+        raise ProjectEnvironmentError(
+            f"compiler environment provisioning timed out after {network_timeout:g} seconds"
+        )
+    try:
+        if key in _PROVISIONED_ENVIRONMENTS:
+            return adapter_python
+        environment.parent.mkdir(parents=True, exist_ok=True)
+        variables = _environment_variables(environment)
+        for provision_command in _environment_provisioning_commands(command, environment):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProjectEnvironmentError(
+                    f"compiler environment provisioning timed out after {network_timeout:g} seconds"
+                )
+            try:
+                process = subprocess.run(
+                    provision_command,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=remaining,
+                    env=variables,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ProjectEnvironmentError(
+                    f"compiler environment provisioning timed out after {network_timeout:g} seconds"
+                ) from exc
+            except OSError as exc:
+                raise ProjectEnvironmentError(
+                    f"compiler environment provisioning failed to start: {exc}"
+                ) from exc
+            if process.returncode != 0:
+                detail = process.stderr.strip() or process.stdout.strip() or "uv exited unsuccessfully"
+                raise ProjectEnvironmentError(
+                    f"could not provision compiler environment: {detail}"
+                )
+        _PROVISIONED_ENVIRONMENTS.add(key)
+        return adapter_python
+    finally:
+        lock.release()
+
+
+def _compiler_environment_key(command: list[str], context: DependencyContext) -> str:
+    environment_command = command[: _uv_run_command_index(command)]
+    if (project := _uv_option_value(environment_command, "--project")) is not None:
+        environment_command = environment_command.copy()
+        project_index = environment_command.index("--project") + 1
+        environment_command[project_index] = _project_environment_key(Path(project))
+    identity = json.dumps(
+        {
+            "command": environment_command,
+            "context": context.to_json_obj(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _project_environment_key(project: Path) -> str:
+    manifest = project / "pyproject.toml"
+    try:
+        workspace = _owning_uv_workspace(manifest).parent
+        relative_manifest = manifest.relative_to(workspace)
+        manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return str(project.resolve())
+    return f"{relative_manifest.as_posix()}:{manifest_sha256}"
+
+
+def _provisioning_lock(key: str) -> threading.Lock:
+    with _PROVISIONING_LOCKS_LOCK:
+        return _PROVISIONING_LOCKS.setdefault(key, threading.Lock())
+
+
+def _environment_python(environment: Path) -> Path:
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _environment_variables(environment: Path) -> dict[str, str]:
+    variables = os.environ.copy()
+    binary_path = str(_environment_python(environment).parent)
+    existing_path = variables.get("PATH")
+    variables["PATH"] = (
+        f"{binary_path}{os.pathsep}{existing_path}" if existing_path else binary_path
+    )
+    variables["VIRTUAL_ENV"] = str(environment)
+    return variables
+
+
+def _environment_provisioning_commands(
+    command: list[str], environment: Path
+) -> list[list[str]]:
+    command_index = _uv_run_command_index(command)
+    options = command[2:command_index]
+    project = _uv_option_value(options, "--project")
+    python = _uv_option_value(options, "--python")
+    venv = [
+        command[0],
+        "venv",
+        "--clear",
+        *(("--project", project) if project is not None else ("--no-project",)),
+        *(("--python", python) if python is not None else ()),
+        str(environment),
+    ]
+    commands = [venv]
+    if project is not None:
+        # The adapter needs dependencies, not the project package. Copying local
+        # dependencies keeps unlocked-project environments valid after their mirror is removed.
+        commands.append(
+            [
+                command[0],
+                "sync",
+                "--project",
+                project,
+                "--active",
+                "--no-editable",
+                "--no-install-project",
+                *(("--frozen",) if "--frozen" in options else ()),
+                *(("--all-extras",) if "--all-extras" in options else ()),
+                *(("--all-groups",) if "--all-groups" in options else ()),
+            ]
+        )
+    install_arguments = [
+        options[index + 1]
+        for index, option in enumerate(options[:-1])
+        if option == "--with"
+    ]
+    assert all(
+        requirement == "typed-ast"
+        or (
+            requirement.startswith("vyper==")
+            and parse_version(requirement.removeprefix("vyper==")) is not None
+        )
+        for requirement in install_arguments
+    )
+    if install_arguments:
+        commands.append(
+            [
+                command[0],
+                "pip",
+                "install",
+                "--python",
+                str(_environment_python(environment)),
+                *install_arguments,
+            ]
+        )
+    return commands
 
 
 def _run_compiler_adapter(
@@ -2211,6 +2375,7 @@ def _run_compiler_adapter(
     coherence_spec: str | None,
     compiler_timeout: float,
     cwd: Path | None,
+    adapter_python: Path | None,
 ) -> _CompilerProcess:
     result_file = tempfile.NamedTemporaryFile(
         prefix="vyupgrade-compiler-result-",
@@ -2221,7 +2386,7 @@ def _run_compiler_adapter(
     result_file.close()
     result_path.unlink()
     runner = [
-        *_compiler_runner_prefix(command),
+        str(adapter_python or sys.executable),
         str(Path(__file__).with_name("compiler_runner.py")),
         str(result_path),
         f"{compiler_timeout:g}",
@@ -2236,6 +2401,11 @@ def _run_compiler_adapter(
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                env=(
+                    _environment_variables(adapter_python.parent.parent)
+                    if adapter_python is not None
+                    else None
+                ),
                 timeout=compiler_timeout + ADAPTER_TIMEOUT_GRACE_SECONDS,
             )
         except subprocess.TimeoutExpired:
@@ -2297,11 +2467,6 @@ def _run_compiler_adapter(
     finally:
         result_path.unlink(missing_ok=True)
 
-
-def _compiler_runner_prefix(command: list[str]) -> list[str]:
-    if not _is_uv_run_command(command):
-        return [sys.executable]
-    return [*command[: _uv_run_command_index(command)], "python"]
 
 
 def _compiler_runner_command(command: list[str]) -> list[str]:
