@@ -53,6 +53,8 @@ ValidationIssueCode = Literal[
     "storage_layout_changed",
 ]
 REPORT_SCHEMA_VERSION = 6
+DEFAULT_COMPILER_TIMEOUT_SECONDS = 120.0
+DEFAULT_NETWORK_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -356,6 +358,8 @@ class Config:
     source_python: str | None = None
     target_python: str | None = None
     compiler_search_paths: tuple[Path, ...] = ()
+    compiler_timeout: float = DEFAULT_COMPILER_TIMEOUT_SECONDS
+    network_timeout: float = DEFAULT_NETWORK_TIMEOUT_SECONDS
     enable_decimals: bool = False
     split_interfaces: bool = False
     include_dependencies: bool = False

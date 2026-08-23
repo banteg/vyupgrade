@@ -1,6 +1,9 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 
+import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -10,12 +13,16 @@ from vyupgrade.compiler import (
     CompileResult,
     OverlayLayoutConflictError,
     TargetOverlay,
+    ProjectEnvironmentError,
     _CompilerProcess,
     _declared_project_environment,
+    _compiler_environment_key,
     _compiler_coherence,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
+    _provision_environment,
+    _run_compiler_process,
     _supports_warning_policy,
     _target_validation_source,
     _uv_bin,
@@ -561,6 +568,258 @@ def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) 
     ):
         assert prepared == command
         assert context == DependencyContext(mode="isolated")
+
+
+def _managed_command(contract: Path, version: str = "0.4.1") -> list[str]:
+    return [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        f"vyper=={version}",
+        "vyper",
+        str(contract),
+    ]
+
+
+def _isolated_contract(tmp_path, monkeypatch) -> Path:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    monkeypatch.setattr("vyupgrade.compiler._nearest_pyproject", lambda _path: None)
+    monkeypatch.setattr("vyupgrade.compiler._COMPILER_ENVIRONMENT_ROOT", tmp_path / "environments")
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONED_ENVIRONMENTS", set())
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONING_LOCKS", {})
+    return contract
+
+
+def _compile(contract: Path) -> _CompilerProcess:
+    return _run_compiler_process(
+        _managed_command(contract),
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=7.0,
+    )
+
+
+def test_uv_environment_is_reused_by_the_adapter(tmp_path, monkeypatch) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.4.1",
+        "python",
+        "-c",
+        "import sys; print(sys.prefix)",
+    ]
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(command, **kwargs):
+        calls.append(command)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", recording_run)
+
+    first = _run_compiler_process(
+        command,
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=30.0,
+    )
+    second = _run_compiler_process(
+        command,
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=30.0,
+    )
+
+    provisioning = [call for call in calls if call[1:2] in (["venv"], ["pip"])]
+    adapters = [call for call in calls if Path(call[1]).name == "compiler_runner.py"]
+    assert [call[1] for call in provisioning] == ["venv", "pip"]
+    assert not any(call[1:2] == ["run"] for call in calls)
+    assert len(adapters) == 2
+    assert adapters[0][0] == adapters[1][0]
+    assert first.stdout.strip() == second.stdout.strip()
+    assert Path(first.stdout.strip()).resolve() == Path(adapters[0][0]).parent.parent.resolve()
+
+
+def test_unrelated_uv_environments_provision_concurrently(tmp_path, monkeypatch) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    context = DependencyContext(mode="isolated")
+    first_command = _managed_command(contract, "0.4.1")
+    second_command = _managed_command(contract, "0.4.3")
+    first_environment = (
+        tmp_path / "environments" / _compiler_environment_key(first_command, context)
+    )
+    second_environment = (
+        tmp_path / "environments" / _compiler_environment_key(second_command, context)
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "venv" and Path(command[-1]) == first_environment:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        if command[1] == "venv" and Path(command[-1]) == second_environment:
+            second_started.set()
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            _provision_environment,
+            first_command,
+            context=context,
+            network_timeout=5.0,
+            cwd=None,
+        )
+        assert first_started.wait(timeout=5)
+        second = executor.submit(
+            _provision_environment,
+            second_command,
+            context=context,
+            network_timeout=5.0,
+            cwd=None,
+        )
+        try:
+            assert second_started.wait(timeout=5)
+            second.result(timeout=5)
+            assert not first.done()
+        finally:
+            release_first.set()
+        first.result(timeout=5)
+
+
+def test_duplicate_uv_provisioning_waits_and_coalesces(tmp_path, monkeypatch) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    context = DependencyContext(mode="isolated")
+    command = _managed_command(contract)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    calls: list[list[str]] = []
+    key_calls = 0
+    key_calls_lock = threading.Lock()
+    real_environment_key = _compiler_environment_key
+
+    def observed_environment_key(command, context):
+        nonlocal key_calls
+        with key_calls_lock:
+            key_calls += 1
+            if key_calls == 2:
+                second_entered.set()
+        return real_environment_key(command, context)
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[1] == "venv":
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_environment_key", observed_environment_key)
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            _provision_environment,
+            command,
+            context=context,
+            network_timeout=5.0,
+            cwd=None,
+        )
+        assert first_started.wait(timeout=5)
+        second = executor.submit(
+            _provision_environment,
+            command,
+            context=context,
+            network_timeout=5.0,
+            cwd=None,
+        )
+        assert second_entered.wait(timeout=5)
+        release_first.set()
+        assert first.result(timeout=5) == second.result(timeout=5)
+
+    assert [call[1] for call in calls] == ["venv", "pip"]
+
+
+def test_duplicate_uv_provisioning_wait_respects_network_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    context = DependencyContext(mode="isolated")
+    command = _managed_command(contract)
+    key = _compiler_environment_key(command, context)
+    lock = threading.Lock()
+    lock.acquire()
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONING_LOCKS", {key: lock})
+
+    try:
+        with pytest.raises(
+            ProjectEnvironmentError,
+            match=r"compiler environment provisioning timed out after 0\.01 seconds",
+        ):
+            _provision_environment(
+                command,
+                context=context,
+                network_timeout=0.01,
+                cwd=None,
+            )
+    finally:
+        lock.release()
+
+
+def test_failed_provisioning_does_not_start_the_adapter(tmp_path, monkeypatch) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    process = _compile(contract)
+
+    assert [call[1] for call in calls] == ["venv"]
+    assert process.failure_origin == "environment"
+    assert process.error == (
+        "compiler environment provisioning failed to start: network is unreachable"
+    )
+
+
+def test_explicit_compiler_is_not_provisioned(tmp_path, monkeypatch) -> None:
+    contract = _isolated_contract(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    _run_compiler_process(
+        [str(tmp_path / "vyper"), str(contract)],
+        contract,
+        project_compiler=False,
+        compiler_timeout=11.0,
+        network_timeout=7.0,
+    )
+
+    assert len(calls) == 1
+    assert Path(calls[0][1]).name == "compiler_runner.py"
 
 
 def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_path) -> None:

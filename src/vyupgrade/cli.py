@@ -2,23 +2,36 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import math
 import os
 from dataclasses import replace
 import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import tomllib
 from pathlib import Path
 from typing import TextIO
 
 from . import closure, compiler, engine
-from .models import ClosureReport, Config, FileReport, RunReport, ValidationDecision
+from .models import (
+    DEFAULT_COMPILER_TIMEOUT_SECONDS,
+    DEFAULT_NETWORK_TIMEOUT_SECONDS,
+    ClosureReport,
+    Config,
+    FileReport,
+    RunReport,
+    ValidationDecision,
+)
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .validation import decide_run_validation, validation_exit_code
 from .versions import MigrationContext
 from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
+
+
+_MAX_TIMEOUT_SECONDS = threading.TIMEOUT_MAX - compiler.ADAPTER_TIMEOUT_GRACE_SECONDS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +42,22 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if not paths:
         print("no paths supplied", file=sys.stderr)
+        return 4
+    compiler_timeout = _positive_seconds(
+        args.compiler_timeout
+        if args.compiler_timeout is not None
+        else pyproject.get("compiler-timeout", DEFAULT_COMPILER_TIMEOUT_SECONDS)
+    )
+    if compiler_timeout is None:
+        print("--compiler-timeout must be a positive number of seconds", file=sys.stderr)
+        return 4
+    network_timeout = _positive_seconds(
+        args.network_timeout
+        if args.network_timeout is not None
+        else pyproject.get("network-timeout", DEFAULT_NETWORK_TIMEOUT_SECONDS)
+    )
+    if network_timeout is None:
+        print("--network-timeout must be a positive number of seconds", file=sys.stderr)
         return 4
     config = Config(
         paths=tuple(paths),
@@ -61,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(path)
             for path in (args.compiler_search_paths or pyproject.get("compiler-search-paths", []))
         ),
+        compiler_timeout=compiler_timeout,
+        network_timeout=network_timeout,
         enable_decimals=args.enable_decimals,
         split_interfaces=args.split_interfaces or bool(pyproject.get("split-interfaces", False)),
         format=args.format or pyproject.get("format", "none"),
@@ -294,6 +325,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-python")
     parser.add_argument("--target-python")
     parser.add_argument("--compiler-search-paths", nargs="*", default=[])
+    parser.add_argument(
+        "--compiler-timeout",
+        help=(
+            "seconds allowed for each compile, once its environment is provisioned "
+            f"(default {DEFAULT_COMPILER_TIMEOUT_SECONDS:g})"
+        ),
+    )
+    parser.add_argument(
+        "--network-timeout",
+        help=(
+            "seconds allowed for provisioning each compiler environment: interpreter "
+            f"selection, downloads, and installs (default {DEFAULT_NETWORK_TIMEOUT_SECONDS:g})"
+        ),
+    )
     parser.add_argument("--enable-decimals", action="store_true")
     parser.add_argument("--split-interfaces", "--interfaces-to-vyi", action="store_true")
     parser.add_argument("--format", choices=["none", "mamushi"])
@@ -499,6 +544,14 @@ def _none_if_infer(value: object) -> str | None:
 
 def _string_or_none(value: object) -> str | None:
     return None if value is None else str(value)
+
+
+def _positive_seconds(value: object) -> float | None:
+    try:
+        seconds = float(str(value))
+    except (OverflowError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) and 0 < seconds <= _MAX_TIMEOUT_SECONDS else None
 
 
 def _run_mamushi(plan: MigrationPlan, report: RunReport) -> None:

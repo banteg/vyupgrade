@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Split compiler environment provisioning from compilation. Each uv-managed
+  compiler environment is now provisioned once per process before its first
+  compile, so interpreter selection, downloads, and installs are bounded by the
+  new `--network-timeout` (default 300 seconds) instead of competing with the
+  compile budget.
+- Added `--compiler-timeout` (default 120 seconds, unchanged) so the compile
+  budget itself is configurable. Both options mirror into `[tool.vyupgrade]` as
+  `network-timeout` and `compiler-timeout`.
+
 ## 0.7.1 - 2026-07-27
 
 - Added per-file Vyper exception class names to JSON compiler failure reports

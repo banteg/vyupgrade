@@ -1253,6 +1253,111 @@ allow-unvalidated-source = true
     assert json.loads(report.read_text())["validation_decision"]["status"] == "waived"
 
 
+def _budgets_seen_by_compiler(tmp_path: Path, monkeypatch, argv: list[str]) -> dict[str, float]:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n", encoding="utf-8")
+    seen: dict[str, float] = {}
+
+    def compile_source_file(path: Path, config: Config, source_version: str | None):
+        seen["compiler_timeout"] = config.compiler_timeout
+        seen["network_timeout"] = config.network_timeout
+        return CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}})
+
+    def compile_target_source(path: Path, source: str, config: Config, overlay=None):
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    monkeypatch.setattr(engine, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
+
+    assert main([str(contract), "--check", *argv]) == 0
+    return seen
+
+
+def test_timeout_defaults_are_unchanged(tmp_path: Path, monkeypatch) -> None:
+    assert _budgets_seen_by_compiler(tmp_path, monkeypatch, []) == {
+        "compiler_timeout": 120.0,
+        "network_timeout": 300.0,
+    }
+
+
+def test_timeout_options_reach_the_compiler(tmp_path: Path, monkeypatch) -> None:
+    argv = ["--compiler-timeout", "45", "--network-timeout", "0.5"]
+
+    assert _budgets_seen_by_compiler(tmp_path, monkeypatch, argv) == {
+        "compiler_timeout": 45.0,
+        "network_timeout": 0.5,
+    }
+
+
+def test_pyproject_timeouts_reach_the_compiler(tmp_path: Path, monkeypatch) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.vyupgrade]\ncompiler-timeout = 45\nnetwork-timeout = 900\n",
+        encoding="utf-8",
+    )
+
+    assert _budgets_seen_by_compiler(tmp_path, monkeypatch, ["--config", str(pyproject)]) == {
+        "compiler_timeout": 45.0,
+        "network_timeout": 900.0,
+    }
+
+
+def test_command_line_timeout_overrides_pyproject(tmp_path: Path, monkeypatch) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[tool.vyupgrade]\nnetwork-timeout = 900\n", encoding="utf-8")
+    argv = ["--config", str(pyproject), "--network-timeout", "60"]
+
+    assert _budgets_seen_by_compiler(tmp_path, monkeypatch, argv)["network_timeout"] == 60.0
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--compiler-timeout", "0"),
+        ("--compiler-timeout", "not-a-number"),
+        ("--compiler-timeout", "inf"),
+        ("--compiler-timeout", "1e100"),
+        ("--network-timeout", "-30"),
+        ("--network-timeout", "0"),
+        ("--network-timeout", ""),
+        ("--network-timeout", "inf"),
+        ("--network-timeout", "1e100"),
+    ],
+)
+def test_invalid_timeout_is_a_usage_error(
+    tmp_path: Path, capsys, option: str, value: str
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n", encoding="utf-8")
+
+    code = main([str(contract), option, value])
+
+    assert code == 4
+    assert f"{option} must be a positive number of seconds" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("compiler-timeout", "inf"),
+        ("network-timeout", "-1"),
+        ("network-timeout", "1e100"),
+    ],
+)
+def test_invalid_pyproject_timeout_is_a_usage_error(
+    tmp_path: Path, capsys, key: str, value: str
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n", encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(f"[tool.vyupgrade]\n{key} = {value}\n", encoding="utf-8")
+
+    code = main([str(contract), "--config", str(pyproject)])
+
+    assert code == 4
+    assert f"--{key} must be a positive number of seconds" in capsys.readouterr().err
+
+
 def test_select_limits_applied_rules(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(
