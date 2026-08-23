@@ -1315,11 +1315,16 @@ def test_command_line_timeout_overrides_pyproject(tmp_path: Path, monkeypatch) -
     [
         ("--compiler-timeout", "0"),
         ("--compiler-timeout", "not-a-number"),
+        ("--compiler-timeout", "inf"),
+        ("--compiler-timeout", "1e100"),
         ("--network-timeout", "-30"),
         ("--network-timeout", "0"),
+        ("--network-timeout", ""),
+        ("--network-timeout", "inf"),
+        ("--network-timeout", "1e100"),
     ],
 )
-def test_non_positive_timeout_is_a_usage_error(
+def test_invalid_timeout_is_a_usage_error(
     tmp_path: Path, capsys, option: str, value: str
 ) -> None:
     contract = tmp_path / "Contract.vy"
@@ -1331,16 +1336,26 @@ def test_non_positive_timeout_is_a_usage_error(
     assert f"{option} must be a positive number of seconds" in capsys.readouterr().err
 
 
-def test_non_positive_pyproject_timeout_is_a_usage_error(tmp_path: Path, capsys) -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("compiler-timeout", "inf"),
+        ("network-timeout", "-1"),
+        ("network-timeout", "1e100"),
+    ],
+)
+def test_invalid_pyproject_timeout_is_a_usage_error(
+    tmp_path: Path, capsys, key: str, value: str
+) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text("#pragma version 0.4.3\n", encoding="utf-8")
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text("[tool.vyupgrade]\nnetwork-timeout = -1\n", encoding="utf-8")
+    pyproject.write_text(f"[tool.vyupgrade]\n{key} = {value}\n", encoding="utf-8")
 
     code = main([str(contract), "--config", str(pyproject)])
 
     assert code == 4
-    assert "--network-timeout must be a positive number of seconds" in capsys.readouterr().err
+    assert f"--{key} must be a positive number of seconds" in capsys.readouterr().err
 
 
 def test_select_limits_applied_rules(tmp_path: Path, passing_compiler) -> None:

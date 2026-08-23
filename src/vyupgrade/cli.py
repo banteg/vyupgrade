@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import math
 import os
 from dataclasses import replace
 import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import tomllib
 from pathlib import Path
 from typing import TextIO
@@ -29,6 +31,9 @@ from .versions import MigrationContext
 from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
 
 
+_MAX_TIMEOUT_SECONDS = threading.TIMEOUT_MAX - compiler.ADAPTER_TIMEOUT_GRACE_SECONDS
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     pyproject = _load_pyproject_config(Path(args.config) if args.config else Path("pyproject.toml"))
@@ -39,13 +44,17 @@ def main(argv: list[str] | None = None) -> int:
         print("no paths supplied", file=sys.stderr)
         return 4
     compiler_timeout = _positive_seconds(
-        args.compiler_timeout or pyproject.get("compiler-timeout", DEFAULT_COMPILER_TIMEOUT_SECONDS)
+        args.compiler_timeout
+        if args.compiler_timeout is not None
+        else pyproject.get("compiler-timeout", DEFAULT_COMPILER_TIMEOUT_SECONDS)
     )
     if compiler_timeout is None:
         print("--compiler-timeout must be a positive number of seconds", file=sys.stderr)
         return 4
     network_timeout = _positive_seconds(
-        args.network_timeout or pyproject.get("network-timeout", DEFAULT_NETWORK_TIMEOUT_SECONDS)
+        args.network_timeout
+        if args.network_timeout is not None
+        else pyproject.get("network-timeout", DEFAULT_NETWORK_TIMEOUT_SECONDS)
     )
     if network_timeout is None:
         print("--network-timeout must be a positive number of seconds", file=sys.stderr)
@@ -540,9 +549,9 @@ def _string_or_none(value: object) -> str | None:
 def _positive_seconds(value: object) -> float | None:
     try:
         seconds = float(str(value))
-    except ValueError:
+    except (OverflowError, ValueError):
         return None
-    return seconds if seconds > 0 else None
+    return seconds if math.isfinite(seconds) and 0 < seconds <= _MAX_TIMEOUT_SECONDS else None
 
 
 def _run_mamushi(plan: MigrationPlan, report: RunReport) -> None:
